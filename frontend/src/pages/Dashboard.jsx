@@ -732,13 +732,25 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
                 )}
 
                 <div className="plate-actions-row">
-                  <label className="plate-photo-trigger" htmlFor="plate-photo-input">
+                  <label className="plate-photo-trigger" htmlFor="plate-camera-input">
                     <span aria-hidden="true">📷</span>
-                    תמונה של הצלחת
+                    צלם עכשיו
                   </label>
                   <input
-                    id="plate-photo-input"
+                    id="plate-camera-input"
                     ref={cameraInputRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="plate-photo-input"
+                    onChange={handleImageChange}
+                  />
+                  <label className="plate-photo-trigger" htmlFor="plate-gallery-input" style={{ marginRight: 8 }}>
+                    <span aria-hidden="true">🖼️</span>
+                    מהגלריה
+                  </label>
+                  <input
+                    id="plate-gallery-input"
                     type="file"
                     accept="image/*"
                     className="plate-photo-input"
