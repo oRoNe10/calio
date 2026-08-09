@@ -89,5 +89,7 @@ class FavoriteMeal(Base):
     carbs_g = Column(Float, default=0)
     source = Column(String, default="manual")
     created_at = Column(DateTime, default=_utcnow)
+    favorite_group_id = Column(String, nullable=True, index=True)  # מקשר מרכיבים של ארוחה מורכבת
+    group_name = Column(String, nullable=True)
 
     user = relationship("User", back_populates="favorites")

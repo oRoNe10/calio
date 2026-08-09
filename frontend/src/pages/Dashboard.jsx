@@ -4,7 +4,7 @@ import {
   describeFood, identifyFoodFromImage,
   initUser, getUserId,
   logFoodToDB, getTodayLog, getWeekLog, removeLogEntry, updateLogEntry, logMealBatch,
-  getFavorites, addFavorite, removeFavorite,
+  getFavorites, addFavorite, removeFavorite, addFavoriteGroup, removeFavoriteGroup,
   chatFoodAssistant,
 } from '../services/api.js'
 
@@ -78,7 +78,10 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
   const [imagePreview, setImagePreview] = useState(null)
   const [imageFile, setImageFile] = useState(null)
   const cameraInputRef = useRef(null)
+  const chatImageInputRef = useRef(null)
   const [loading, setLoading] = useState(false)
+  const [loadingStep, setLoadingStep] = useState(0)
+  const [loadingIsImage, setLoadingIsImage] = useState(false)
   const [error, setError] = useState(null)
   const [logged, setLogged] = useState([])
   const [favorites, setFavorites] = useState([])
@@ -171,6 +174,14 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
       document.removeEventListener('keydown', handleEscape)
     }
   }, [favoritesMenuOpen])
+
+  useEffect(() => {
+    if (!loading) { setLoadingStep(0); return }
+    const id = setInterval(() => {
+      setLoadingStep((s) => Math.min(s + 1, 3))
+    }, 1600)
+    return () => clearInterval(id)
+  }, [loading])
 
   useEffect(() => {
     if (activeView !== 'chat') return
@@ -275,6 +286,7 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
     }
 
     setError(null)
+    setLoadingIsImage(!!imageFile)
     setLoading(true)
     try {
       const data = imageFile
@@ -430,6 +442,30 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
     return logged.filter((i) => i.meal_group_id === editingItem.meal_group_id)
   }, [logged, editingItem])
 
+  const groupedFavorites = useMemo(() => {
+    const result = []
+    const seenGroups = new Set()
+    for (const fav of favorites) {
+      if (!fav.favorite_group_id) {
+        result.push(fav)
+      } else if (!seenGroups.has(fav.favorite_group_id)) {
+        seenGroups.add(fav.favorite_group_id)
+        const groupItems = favorites.filter((f) => f.favorite_group_id === fav.favorite_group_id)
+        const total = groupItems.reduce(
+          (acc, c) => ({
+            calories: acc.calories + c.calories,
+            protein_g: acc.protein_g + c.protein_g,
+            fat_g: acc.fat_g + c.fat_g,
+            carbs_g: acc.carbs_g + c.carbs_g,
+          }),
+          { calories: 0, protein_g: 0, fat_g: 0, carbs_g: 0 }
+        )
+        result.push({ id: fav.favorite_group_id, favorite_group_id: fav.favorite_group_id, group_name: fav.group_name, components: groupItems, total })
+      }
+    }
+    return result
+  }, [favorites])
+
   // כוכב - הוספה/הסרה ממועדפים
   async function handleToggleFavorite(item) {
     if (!userId) return
@@ -461,15 +497,51 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
     }
   }
 
-  // הוספת מועדף לרשימה היומית
-  async function handleAddFromFavorite(fav) {
-    setAddingFavoriteId(fav.id)
+  async function handleToggleGroupFavorite(components, title) {
+    if (!userId) return
+    setSavingFav(`group_${title}`)
     try {
-      await addItem(fav)
+      const existing = favorites.find((f) => f.favorite_group_id && f.group_name === title)
+      if (existing) {
+        await removeFavoriteGroup(existing.favorite_group_id)
+        setFavorites((prev) => prev.filter((f) => f.favorite_group_id !== existing.favorite_group_id))
+      } else {
+        const saved = await addFavoriteGroup(userId, title, components.map((c) => ({
+          food_name: c.food_name,
+          quantity_grams: c.quantity_grams,
+          calories: c.calories,
+          protein_g: c.protein_g,
+          fat_g: c.fat_g,
+          carbs_g: c.carbs_g || 0,
+        })))
+        setFavorites((prev) => [...prev, ...saved])
+      }
+    } catch { /* silent */ } finally {
+      setSavingFav(null)
+    }
+  }
+
+  // הוספת מועדף לרשימה היומית
+  async function handleAddFromFavorite(entry) {
+    const key = entry.favorite_group_id ?? entry.id
+    setAddingFavoriteId(key)
+    try {
+      if (entry.favorite_group_id) {
+        await addItem({ components: entry.components })
+      } else {
+        await addItem(entry)
+      }
       setFavoritesMenuOpen(false)
     } finally {
       setAddingFavoriteId(null)
     }
+  }
+
+  async function handleRemoveFavoriteGroup(favGroupId) {
+    try {
+      await removeFavoriteGroup(favGroupId)
+      setFavorites((prev) => prev.filter((f) => f.favorite_group_id !== favGroupId))
+    } catch { /* silent */ }
   }
 
   async function handleSwitchView(view) {
@@ -542,6 +614,57 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
           id: crypto.randomUUID(),
           role: 'assistant',
           content: err.message || 'לא הצלחתי לענות כרגע. נסה לנסח שוב.',
+          meal: null,
+          components: null,
+        },
+      ])
+    } finally {
+      setChatLoading(false)
+    }
+  }
+
+  async function handleChatImageUpload(e) {
+    const file = e.target.files?.[0]
+    if (!file || chatLoading) return
+    if (chatImageInputRef.current) chatImageInputRef.current.value = ''
+    ensureChatDayIsCurrent()
+
+    const userMsg = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: '📷 שלחתי תמונה של מנה לניתוח',
+      meal: null,
+      components: null,
+    }
+    setChatMessages((prev) => [...prev, userMsg])
+    setChatLoading(true)
+
+    try {
+      const result = await identifyFoodFromImage(file)
+      const parts = []
+      if (result.meal) {
+        parts.push(`זיהיתי: ${result.meal.food_name} (${Math.round(result.meal.quantity_grams)}ג׳) — ${Math.round(result.meal.calories)} קק״ל · חלבון ${Math.round(result.meal.protein_g)}ג׳ · שומן ${Math.round(result.meal.fat_g)}ג׳ · פחמימה ${Math.round(result.meal.carbs_g)}ג׳`)
+      } else if (result.components?.length) {
+        parts.push(`זיהיתי ארוחה מרוכבת (${result.components.length} רכיבים):`)
+        result.components.forEach((c) => parts.push(`• ${c.food_name} ${Math.round(c.quantity_grams)}ג׳ — ${Math.round(c.calories)} קק״ל`))
+      } else {
+        parts.push('לא הצלחתי לזהות מנה בתמונה. נסה תמונה ברורה יותר.')
+      }
+      const assistantMsg = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: parts.join('\n'),
+        meal: result.meal || null,
+        components: result.components || null,
+      }
+      setChatMessages((prev) => [...prev, assistantMsg])
+    } catch (err) {
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: err.message || 'לא הצלחתי לזהות את המנה בתמונה.',
           meal: null,
           components: null,
         },
@@ -728,6 +851,20 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
                       alt="תצוגה מקדימה של הצלחת"
                       className="plate-preview-image"
                     />
+                    <button
+                      type="button"
+                      className="plate-preview-remove"
+                      aria-label="הסר תמונה"
+                      onClick={() => {
+                        setImageFile(null)
+                        setImagePreview(null)
+                        if (cameraInputRef.current) cameraInputRef.current.value = ''
+                        const galleryInput = document.getElementById('plate-gallery-input')
+                        if (galleryInput) galleryInput.value = ''
+                      }}
+                    >
+                      ✕
+                    </button>
                   </div>
                 )}
 
@@ -759,15 +896,34 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
                   {imageFile && <div className="plate-photo-meta">נבחרה תמונה</div>}
                 </div>
 
-                <button className="btn btn-primary" type="submit" disabled={loading} style={{ position: 'relative' }}>
-                  {loading ? (
-                    <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-                      <span style={{ width: 16, height: 16, border: '2px solid rgba(255,255,255,0.4)', borderTopColor: '#fff', borderRadius: '50%', display: 'inline-block', animation: 'spin 0.7s linear infinite' }} />
-                      מחשב...
-                    </span>
-                  ) : 'נתחו עבורי'}
+                <button className="btn btn-primary" type="submit" disabled={loading}>
+                  נתחו עבורי
                 </button>
               </form>
+
+              {loading && (() => {
+                const textSteps = ['קורא את התיאור...', 'מזהה מרכיבים...', 'מחשב ערכים תזונתיים...', 'כמעט מוכן...']
+                const imageSteps = ['סורק את התמונה...', 'מזהה מנות...', 'מחשב ערכים תזונתיים...', 'כמעט מוכן...']
+                const steps = loadingIsImage ? imageSteps : textSteps
+                return (
+                  <div className="ai-loading-overlay" role="status" aria-live="polite">
+                    <div className="ai-loading-content">
+                      <div className="ai-loading-icon">
+                        <div className="ai-loading-ring" />
+                        <span>{loadingIsImage ? '📸' : '🥪'}</span>
+                      </div>
+                      <div className="ai-loading-title">מנתח עם בינה מלאכותית</div>
+                      <div className="ai-loading-step">{steps[loadingStep]}</div>
+                      <div className="ai-loading-progress">
+                        <div className="ai-loading-progress-fill" style={{ width: `${(loadingStep + 1) * 25}%` }} />
+                      </div>
+                      <div className="ai-loading-dots">
+                        <span /><span /><span />
+                      </div>
+                    </div>
+                  </div>
+                )
+              })()}
             </div>
 
             {/* Food log */}
@@ -833,6 +989,12 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
                           </div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
                             <div className="food-log-calories">{Math.round(total.calories)}</div>
+                            <button
+                              onClick={() => handleToggleGroupFavorite(components, title)}
+                              disabled={savingFav === `group_${title}`}
+                              title={favorites.some((f) => f.favorite_group_id && f.group_name === title) ? 'הסר מארוחות אהובות' : 'שמור ארוחה שלמה למועדפים'}
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: favorites.some((f) => f.favorite_group_id && f.group_name === title) ? 'var(--color-warning)' : 'var(--color-icon-muted)', padding: '2px 4px', lineHeight: 1 }}
+                            >★</button>
                             <button
                               onClick={() => handleRequestDeleteGroup(meal_group_id)}
                               title="מחק ארוחה"
@@ -1028,6 +1190,18 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
             </div>
 
             <form className="chat-form" onSubmit={handleSendChat}>
+              <label className="chat-image-btn" htmlFor="chat-image-input" title="העלה תמונה של מנה" aria-label="העלה תמונה">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="6"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+              </label>
+              <input
+                id="chat-image-input"
+                ref={chatImageInputRef}
+                type="file"
+                accept="image/*"
+                className="plate-photo-input"
+                onChange={handleChatImageUpload}
+                disabled={chatLoading}
+              />
               <input
                 className="form-input chat-input"
                 type="text"
@@ -1089,19 +1263,53 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
             {favorites.length === 0 && (
               <div className="favorites-menu-empty">אין עדיין מנות אהובות</div>
             )}
-            {favorites.filter((f) => !favSearch || f.food_name.includes(favSearch)).map((fav) => (
-              <button
-                key={fav.id}
-                type="button"
-                className="favorites-menu-item"
-                onClick={() => handleAddFromFavorite(fav)}
-                disabled={addingFavoriteId === fav.id}
-                title="הוסף ליומן היומי"
-              >
-                <div className="favorites-menu-item-name">{fav.food_name}</div>
-                <div className="favorites-menu-item-meta">{fav.quantity_grams}ג׳ · {Math.round(fav.calories)} קק״ל</div>
-              </button>
-            ))}
+            {groupedFavorites
+              .filter((entry) => !favSearch || (entry.group_name ?? entry.food_name ?? '').includes(favSearch))
+              .map((entry) => {
+                if (entry.favorite_group_id) {
+                  const key = entry.favorite_group_id
+                  return (
+                    <div key={key} className="favorites-menu-item favorites-menu-item-group">
+                      <button
+                        type="button"
+                        className="favorites-menu-item-add-btn"
+                        onClick={() => handleAddFromFavorite(entry)}
+                        disabled={addingFavoriteId === key}
+                        title="הוסף ארוחה שלמה ליומן"
+                      >
+                        <div className="favorites-menu-item-name">
+                          <span style={{ fontSize: 14, marginLeft: 5 }}>🍱</span>
+                          {entry.group_name}
+                        </div>
+                        <div className="favorites-menu-item-meta">
+                          {entry.components.length} מרכיבים · {Math.round(entry.total.calories)} קק״ל · חלבון {Math.round(entry.total.protein_g)}ג׳
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        className="favorites-menu-item-remove"
+                        onClick={() => handleRemoveFavoriteGroup(key)}
+                        title="הסר מהמועדפים"
+                        aria-label="הסר ארוחה מהמועדפים"
+                      >✕</button>
+                    </div>
+                  )
+                }
+                return (
+                  <div key={entry.id} className="favorites-menu-item">
+                    <button
+                      type="button"
+                      className="favorites-menu-item-add-btn"
+                      onClick={() => handleAddFromFavorite(entry)}
+                      disabled={addingFavoriteId === entry.id}
+                      title="הוסף ליומן היומי"
+                    >
+                      <div className="favorites-menu-item-name">{entry.food_name}</div>
+                      <div className="favorites-menu-item-meta">{entry.quantity_grams}ג׳ · {Math.round(entry.calories)} קק״ל</div>
+                    </button>
+                  </div>
+                )
+              })}
           </div>
         </aside>
       </div>

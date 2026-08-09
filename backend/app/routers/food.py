@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from ..schemas import (
     FoodDescribeRequest, FoodLookupRequest,
     FoodLogCreate, FoodLogUpdate, FoodLogBatch, FoodLogOut, FavoriteMealCreate, FavoriteMealOut,
-    FoodChatRequest, FoodChatResponse,
+    FoodChatRequest, FoodChatResponse, FavoriteGroupCreate,
 )
 from ..models import FoodLog, FavoriteMeal
 from ..database import get_db
@@ -254,4 +254,41 @@ def remove_favorite(favorite_id: int, db: Session = Depends(get_db)):
     db.delete(fav)
     db.commit()
     return {"status": "removed"}
+
+
+@router.post("/favorites/group", response_model=list[FavoriteMealOut])
+def add_favorite_group(entry: FavoriteGroupCreate, db: Session = Depends(get_db)):
+    """שומר ארוחה מרוכבת כמועדף — כל מרכיב נשמר עם favorite_group_id משותף."""
+    import uuid
+    group_id = str(uuid.uuid4())
+    saved = []
+    for comp in entry.components:
+        fav = FavoriteMeal(
+            user_id=entry.user_id,
+            food_name=comp.food_name,
+            quantity_grams=comp.quantity_grams,
+            calories=comp.calories,
+            protein_g=comp.protein_g,
+            fat_g=comp.fat_g,
+            carbs_g=comp.carbs_g,
+            source="ai",
+            favorite_group_id=group_id,
+            group_name=entry.group_name,
+        )
+        db.add(fav)
+        saved.append(fav)
+    db.commit()
+    for fav in saved:
+        db.refresh(fav)
+    return saved
+
+
+@router.delete("/favorites/group/{fav_group_id}")
+def remove_favorite_group(fav_group_id: str, db: Session = Depends(get_db)):
+    """מסיר את כל מרכיבי ארוחה מרוכבת מהמועדפים לפי favorite_group_id."""
+    rows = db.query(FavoriteMeal).filter(FavoriteMeal.favorite_group_id == fav_group_id).all()
+    for row in rows:
+        db.delete(row)
+    db.commit()
+    return {"status": "removed", "count": len(rows)}
 

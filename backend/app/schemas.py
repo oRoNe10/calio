@@ -181,6 +181,8 @@ class FavoriteMealCreate(BaseModel):
     fat_g: float
     carbs_g: float = 0
     source: str = "manual"
+    favorite_group_id: Optional[str] = None
+    group_name: Optional[str] = None
 
 
 class FavoriteMealOut(BaseModel):
@@ -192,9 +194,17 @@ class FavoriteMealOut(BaseModel):
     fat_g: float
     carbs_g: float
     source: str
+    favorite_group_id: Optional[str] = None
+    group_name: Optional[str] = None
 
     class Config:
         from_attributes = True
+
+
+class FavoriteGroupCreate(BaseModel):
+    user_id: int
+    group_name: str
+    components: List[FoodLogManual]
 
 
 # ---------- סיכום יומי/שבועי ----------

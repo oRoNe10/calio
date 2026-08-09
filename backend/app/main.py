@@ -29,11 +29,14 @@ Base.metadata.create_all(bind=engine)
 with engine.connect() as _conn:
     for _stmt in [
         "ALTER TABLE food_logs ADD COLUMN meal_group_id VARCHAR",
+        "ALTER TABLE favorite_meals ADD COLUMN favorite_group_id VARCHAR",
+        "ALTER TABLE favorite_meals ADD COLUMN group_name VARCHAR",
     ]:
         try:
             _conn.execute(text(_stmt))
             _conn.commit()
         except Exception:
+            _conn.rollback()
             pass  # העמודה כבר קיימת
 
 app = FastAPI(
@@ -64,3 +67,11 @@ app.include_router(food.router)
 @app.get("/")
 def root():
     return {"message": "CAL.IO API is running"}
+
+
+@app.get("/healthz")
+def healthz():
+    """Lightweight health endpoint that also verifies DB connectivity."""
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+    return {"status": "ok"}

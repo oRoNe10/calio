@@ -10,6 +10,44 @@
  */
 const BASE_URL = (import.meta.env.VITE_API_URL || (typeof window !== 'undefined' ? window.location.origin : '')).replace(/\/$/, '')
 
+const IMAGE_MAX_SIDE = 1280
+const IMAGE_QUALITY = 0.8
+
+async function optimizeImageForUpload(file) {
+  // If the browser does not support canvas/image decode APIs, fall back to original file.
+  if (typeof window === 'undefined' || typeof createImageBitmap !== 'function') {
+    return file
+  }
+
+  try {
+    const bitmap = await createImageBitmap(file)
+    const { width, height } = bitmap
+    const scale = Math.min(1, IMAGE_MAX_SIDE / Math.max(width, height))
+    const targetWidth = Math.max(1, Math.round(width * scale))
+    const targetHeight = Math.max(1, Math.round(height * scale))
+
+    const canvas = document.createElement('canvas')
+    canvas.width = targetWidth
+    canvas.height = targetHeight
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return file
+
+    ctx.drawImage(bitmap, 0, 0, targetWidth, targetHeight)
+
+    const preferredType = file.type === 'image/png' ? 'image/png' : 'image/jpeg'
+    const blob = await new Promise((resolve) => {
+      canvas.toBlob((result) => resolve(result), preferredType, IMAGE_QUALITY)
+    })
+
+    if (!blob) return file
+    if (blob.size >= file.size) return file
+
+    return new File([blob], file.name, { type: blob.type || file.type, lastModified: file.lastModified })
+  } catch {
+    return file
+  }
+}
+
 // ── Device user (זיהוי ללא הרשמה) ──────────────────────────────────────────
 
 function getDeviceId() {
@@ -79,13 +117,30 @@ export async function lookupFood(foodName, quantityGrams) {
 }
 
 export async function describeFood(description) {
-  const response = await fetch(`${BASE_URL}/food/describe`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ description }),
-  })
-  if (!response.ok) throw new Error('לא הצלחנו להעריך את המנה')
-  return response.json()
+  const payload = JSON.stringify({ description })
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const response = await fetch(`${BASE_URL}/food/describe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+    })
+
+    if (response.ok) return response.json()
+
+    const err = await response.json().catch(() => ({}))
+    const detail = err.detail || 'לא הצלחנו להעריך את המנה'
+    const isTransient = response.status === 503
+
+    if (isTransient && attempt === 1) {
+      await new Promise((resolve) => setTimeout(resolve, 700))
+      continue
+    }
+
+    throw new Error(detail)
+  }
+
+  throw new Error('לא הצלחנו להעריך את המנה')
 }
 
 export async function chatFoodAssistant(message, history = []) {
@@ -103,8 +158,9 @@ export async function chatFoodAssistant(message, history = []) {
 
 /** שולח תמונה של מאכל ומקבל זיהוי + ערכים תזונתיים. */
 export async function identifyFoodFromImage(file) {
+  const optimized = await optimizeImageForUpload(file)
   const formData = new FormData()
-  formData.append('file', file)
+  formData.append('file', optimized)
   const response = await fetch(`${BASE_URL}/food/identify-image`, {
     method: 'POST',
     body: formData,
@@ -197,6 +253,21 @@ export async function addFavorite(userId, mealData) {
 export async function removeFavorite(favoriteId) {
   const response = await fetch(`${BASE_URL}/food/favorites/${favoriteId}`, { method: 'DELETE' })
   if (!response.ok) throw new Error('שגיאה בהסרה ממועדפים')
+}
+
+export async function addFavoriteGroup(userId, groupName, components) {
+  const response = await fetch(`${BASE_URL}/food/favorites/group`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: Number(userId), group_name: groupName, components }),
+  })
+  if (!response.ok) throw new Error('שגיאה בשמירת ארוחה מורכבת למועדפים')
+  return response.json()
+}
+
+export async function removeFavoriteGroup(favGroupId) {
+  const response = await fetch(`${BASE_URL}/food/favorites/group/${favGroupId}`, { method: 'DELETE' })
+  if (!response.ok) throw new Error('שגיאה בהסרת ארוחה מורכבת ממועדפים')
 }
 
 export async function deleteUserAccount(userId) {
