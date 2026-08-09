@@ -341,7 +341,11 @@ def _extract_inline_nutrition(description: str) -> dict | None:
     qty_matches = [_to_float_token(m.group(1)) for m in _QUANTITY_PATTERN.finditer(description)]
     quantity_grams = max(qty_matches) if qty_matches else 100.0
 
-    food_name = description.split(":", 1)[0].strip() or description.strip()
+    # Extract food name as the text before the first nutrition value
+    nutrition_matches = [m for m in [calories_match, protein_match, fat_match, carbs_match] if m]
+    first_pos = min(m.start() for m in nutrition_matches)
+    prefix = description[:first_pos].strip().rstrip(":")
+    food_name = prefix or description.split(":", 1)[0].strip() or description.strip()
     return {
         "food_name": food_name,
         "quantity_grams": quantity_grams,
@@ -415,6 +419,11 @@ def _extract_multiline_description_components(description: str) -> list[dict]:
                     "carbs_g": None,
                     "source": "description_component",
                 })
+        else:
+            # Pattern: "אבקת חלבון 112 קלוריות 21 חלבון" (inline nutrition without colon)
+            parsed = _extract_inline_nutrition(line)
+            if parsed:
+                components.append(parsed)
 
     return components if len(components) >= 2 else []
 
