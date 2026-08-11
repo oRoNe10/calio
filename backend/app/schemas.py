@@ -37,6 +37,8 @@ class ProfileCreate(BaseModel):
     sex: str  # "male" | "female"
     activity_level: str = "moderate"
     goal: str = "maintain"  # "lose" | "maintain" | "gain"
+    target_weight_kg: Optional[float] = None
+    weekly_weight_change_kg: Optional[float] = None
 
 
 class ProfileResult(BaseModel):
@@ -59,6 +61,8 @@ class ProfileSave(BaseModel):
     sex: str
     activity_level: str = "moderate"
     goal: str = "maintain"
+    target_weight_kg: Optional[float] = None
+    weekly_weight_change_kg: Optional[float] = None
     bmr: float
     tdee: float
     bmi: float
@@ -76,6 +80,8 @@ class ProfileOut(BaseModel):
     sex: str
     activity_level: str
     goal: str
+    target_weight_kg: Optional[float] = None
+    weekly_weight_change_kg: Optional[float] = None
     bmr: Optional[float] = None
     tdee: Optional[float] = None
     bmi: Optional[float] = None
@@ -83,6 +89,22 @@ class ProfileOut(BaseModel):
     target_protein_g: Optional[float] = None
     target_fat_g: Optional[float] = None
     target_carbs_g: Optional[float] = None
+
+    class Config:
+        from_attributes = True
+
+
+class DailyWeightUpsert(BaseModel):
+    user_id: int
+    weight_kg: float
+    log_date: Optional[date] = None
+
+
+class DailyWeightOut(BaseModel):
+    id: int
+    user_id: int
+    weight_kg: float
+    log_date: date
 
     class Config:
         from_attributes = True
@@ -215,4 +237,5 @@ class DaySummary(BaseModel):
     fat_g: float
     carbs_g: float
     entries: int
+    weight_kg: Optional[float] = None
     items: List[FoodLogOut] = []

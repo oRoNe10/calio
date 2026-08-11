@@ -19,14 +19,16 @@ export default defineConfig({
         display: 'standalone',
         icons: [
           {
-            src: 'icon-192.png',
-            sizes: '192x192',
+            src: 'calorie_app_logo.png',
+            sizes: '1022x1003',
             type: 'image/png',
+            purpose: 'any maskable',
           },
           {
-            src: 'icon-512.png',
-            sizes: '512x512',
+            src: 'calorie_app_logo.png',
+            sizes: '1022x1003',
             type: 'image/png',
+            purpose: 'any maskable',
           },
         ],
       },

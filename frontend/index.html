@@ -4,11 +4,34 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>CAL.IO - עוקב מאזן תזונתי</title>
+    <link rel="icon" type="image/png" href="/calorie_app_logo.png" />
+    <link rel="apple-touch-icon" href="/calorie_app_logo.png" />
+    <script>
+      (function () {
+        try {
+          var savedTheme = localStorage.getItem('calio_theme')
+          if (savedTheme === 'dark') {
+            document.documentElement.setAttribute('data-theme', 'dark')
+          }
+        } catch (error) {
+          // Ignore storage read errors and continue with default theme.
+        }
+      })()
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Lora:wght@400;500;600;700&family=Raleway:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
   </head>
   <body>
+    <div id="initial-splash" role="status" aria-live="polite" aria-label="טוען את CAL.IO">
+      <div class="initial-splash-inner">
+        <div class="initial-splash-logo">
+          <img src="/calorie_app_logo.png" alt="CAL.IO" />
+        </div>
+        <div class="initial-splash-loader" aria-hidden="true"></div>
+        <p class="initial-splash-text">טוען את המערכת...</p>
+      </div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>

@@ -31,6 +31,8 @@ with engine.connect() as _conn:
         "ALTER TABLE food_logs ADD COLUMN meal_group_id VARCHAR",
         "ALTER TABLE favorite_meals ADD COLUMN favorite_group_id VARCHAR",
         "ALTER TABLE favorite_meals ADD COLUMN group_name VARCHAR",
+        "ALTER TABLE user_profiles ADD COLUMN target_weight_kg FLOAT",
+        "ALTER TABLE user_profiles ADD COLUMN weekly_weight_change_kg FLOAT",
     ]:
         try:
             _conn.execute(text(_stmt))

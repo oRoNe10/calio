@@ -1,7 +1,7 @@
 """
 טבלאות מסד הנתונים.
 """
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Date
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Date, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime, date, timezone
 from .database import Base
@@ -23,6 +23,7 @@ class User(Base):
     profile = relationship("UserProfile", back_populates="user", uselist=False)
     food_logs = relationship("FoodLog", back_populates="user")
     favorites = relationship("FavoriteMeal", back_populates="user")
+    daily_weights = relationship("DailyWeight", back_populates="user")
 
 
 class UserProfile(Base):
@@ -38,6 +39,8 @@ class UserProfile(Base):
     sex = Column(String, nullable=False)
     activity_level = Column(String, default="moderate")
     goal = Column(String, default="maintain")
+    target_weight_kg = Column(Float, nullable=True)
+    weekly_weight_change_kg = Column(Float, nullable=True)
 
     # יעדים מחושבים - נשמרים כדי לטעון מהר בלי לחשב מחדש
     bmr = Column(Float, nullable=True)
@@ -93,3 +96,18 @@ class FavoriteMeal(Base):
     group_name = Column(String, nullable=True)
 
     user = relationship("User", back_populates="favorites")
+
+
+class DailyWeight(Base):
+    """משקל יומי אחד לכל משתמש ולכל תאריך."""
+    __tablename__ = "daily_weights"
+    __table_args__ = (UniqueConstraint("user_id", "log_date", name="uq_daily_weights_user_date"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    weight_kg = Column(Float, nullable=False)
+    log_date = Column(Date, default=date.today, nullable=False, index=True)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    user = relationship("User", back_populates="daily_weights")

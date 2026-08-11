@@ -18,6 +18,24 @@ GOAL_CALORIE_ADJUSTMENT = {
     "gain": 0.15,       # עודף של 15% מה-TDEE
 }
 
+CALORIES_PER_KG = 7700
+
+
+def validate_target_weight_for_goal(
+    weight_kg: float,
+    goal: str,
+    target_weight_kg: float | None,
+) -> None:
+    """מוודא שמשקל היעד תואם לכיוון המטרה, אם הוזן בכלל."""
+    if target_weight_kg is None:
+        return
+
+    if goal == "gain" and target_weight_kg < weight_kg:
+        raise ValueError("במטרת עלייה, משקל היעד לא יכול להיות קטן מהמשקל הנוכחי.")
+
+    if goal == "lose" and target_weight_kg > weight_kg:
+        raise ValueError("במטרת ירידה, משקל היעד לא יכול להיות גדול מהמשקל הנוכחי.")
+
 
 def calculate_bmr(weight_kg: float, height_cm: float, age: int, sex: str) -> float:
     """
@@ -65,15 +83,48 @@ def calculate_macros(target_calories: float, weight_kg: float) -> dict:
     }
 
 
+def calculate_goal_based_calories(
+    tdee: float,
+    goal: str,
+    weight_kg: float,
+    target_weight_kg: float | None,
+    weekly_weight_change_kg: float | None,
+) -> float:
+    """מחשב יעד קלורי לפי מטרה כללית או לפי יעד משקל+קצב שבועי אם סופקו."""
+    has_target_weight = target_weight_kg is not None
+    has_weekly_change = weekly_weight_change_kg is not None and weekly_weight_change_kg > 0
+
+    if has_target_weight and has_weekly_change:
+        remaining_change_kg = target_weight_kg - weight_kg
+        if abs(remaining_change_kg) < 0.05:
+            return tdee
+
+        effective_weekly_change = min(abs(remaining_change_kg), weekly_weight_change_kg)
+        daily_calorie_delta = (effective_weekly_change * CALORIES_PER_KG) / 7
+        return tdee + (daily_calorie_delta if remaining_change_kg > 0 else -daily_calorie_delta)
+
+    adjustment = GOAL_CALORIE_ADJUSTMENT.get(goal, 0.0)
+    return tdee * (1 + adjustment)
+
+
 def calculate_full_profile(weight_kg: float, height_cm: float, age: int,
-                            sex: str, activity_level: str, goal: str) -> dict:
+                            sex: str, activity_level: str, goal: str,
+                            target_weight_kg: float | None = None,
+                            weekly_weight_change_kg: float | None = None) -> dict:
     """הפונקציה המרכזית - מקבלת נתונים פיזיולוגיים ומחזירה את כל היעדים היומיים."""
+    validate_target_weight_for_goal(weight_kg, goal, target_weight_kg)
+
     bmr = calculate_bmr(weight_kg, height_cm, age, sex)
     bmi = calculate_bmi(weight_kg, height_cm)
     tdee = calculate_tdee(bmr, activity_level)
 
-    adjustment = GOAL_CALORIE_ADJUSTMENT.get(goal, 0.0)
-    target_calories = tdee * (1 + adjustment)
+    target_calories = calculate_goal_based_calories(
+        tdee=tdee,
+        goal=goal,
+        weight_kg=weight_kg,
+        target_weight_kg=target_weight_kg,
+        weekly_weight_change_kg=weekly_weight_change_kg,
+    )
 
     macros = calculate_macros(target_calories, weight_kg)
 

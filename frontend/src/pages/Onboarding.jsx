@@ -64,9 +64,12 @@ function Onboarding({ allowEdit = false, theme = 'light', onThemeToggle }) {
   const navigate = useNavigate()
   const [loading, setLoading] = useState(false)
   const [initializing, setInitializing] = useState(true)
+  const [formError, setFormError] = useState(null)
   const [form, setForm] = useState({
     display_name: '',
     weight_kg: '',
+    target_weight_kg: '',
+    weekly_weight_change_kg: '0',
     height_cm: '',
     age: '',
     sex: 'male',
@@ -86,6 +89,8 @@ function Onboarding({ allowEdit = false, theme = 'light', onThemeToggle }) {
           setForm({
             display_name: savedDisplayName,
             weight_kg: String(saved.weight_kg),
+            target_weight_kg: saved.target_weight_kg != null ? String(saved.target_weight_kg) : '',
+            weekly_weight_change_kg: saved.weekly_weight_change_kg != null ? String(saved.weekly_weight_change_kg) : '0',
             height_cm: String(saved.height_cm),
             age: String(saved.age),
             sex: saved.sex,
@@ -111,36 +116,66 @@ function Onboarding({ allowEdit = false, theme = 'light', onThemeToggle }) {
   }, [allowEdit, navigate])
 
   function handleChange(e) {
+    setFormError(null)
     setForm({ ...form, [e.target.name]: e.target.value })
   }
 
   function handleSelectChange(name, value) {
+    setFormError(null)
     setForm((prev) => ({ ...prev, [name]: value }))
+  }
+
+  function validateTargetWeightForGoal(goal, currentWeight, targetWeight) {
+    if (targetWeight == null) return null
+
+    if (goal === 'gain' && targetWeight < currentWeight) {
+      return 'במטרת עלייה, משקל היעד לא יכול להיות קטן מהמשקל הנוכחי.'
+    }
+
+    if (goal === 'lose' && targetWeight > currentWeight) {
+      return 'במטרת ירידה, משקל היעד לא יכול להיות גדול מהמשקל הנוכחי.'
+    }
+
+    return null
   }
 
   async function handleSubmit(e) {
     e.preventDefault()
-    setLoading(true)
     try {
       const displayName = form.display_name.trim()
       const restForm = { ...form }
       delete restForm.display_name
+      const currentWeight = Number(form.weight_kg)
+      const targetWeight = form.target_weight_kg === '' ? null : Number(form.target_weight_kg)
+      const targetWeightError = validateTargetWeightForGoal(form.goal, currentWeight, targetWeight)
+
+      if (targetWeightError) {
+        setFormError(targetWeightError)
+        return
+      }
+
+      setLoading(true)
+      setFormError(null)
       const profileInput = {
         ...restForm,
-        weight_kg: Number(form.weight_kg),
+        weight_kg: currentWeight,
+        target_weight_kg: targetWeight,
+        weekly_weight_change_kg: Number(form.weekly_weight_change_kg) > 0 ? Number(form.weekly_weight_change_kg) : null,
         height_cm: Number(form.height_cm),
         age: Number(form.age),
       }
       const result = await calculateProfile(profileInput)
       localStorage.setItem('calio_display_name', displayName)
       // שמירה ב-localStorage לשימוש מהיר ב-Dashboard
-      localStorage.setItem('calio_profile', JSON.stringify({ ...result, display_name: displayName }))
+      localStorage.setItem('calio_profile', JSON.stringify({ ...profileInput, ...result, display_name: displayName }))
       // שמירה לDB כדי שלא יצטרך להכניס שוב
       const userId = getUserId()
       if (userId) {
         await saveProfileToDB(userId, profileInput, result)
       }
       navigate('/dashboard', { replace: true })
+    } catch (err) {
+      setFormError(err.message || 'לא הצלחנו לשמור את הפרופיל כרגע.')
     } finally {
       setLoading(false)
     }
@@ -285,6 +320,45 @@ function Onboarding({ allowEdit = false, theme = 'light', onThemeToggle }) {
             </div>
 
             <div className="form-group">
+              <label className="form-label">משקל יעד (אופציונלי)</label>
+              <input
+                className="form-input"
+                name="target_weight_kg"
+                type="number"
+                min="30"
+                max="300"
+                step="0.1"
+                value={form.target_weight_kg}
+                onChange={handleChange}
+                placeholder="למשל 65"
+              />
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">קצב שינוי משקל בשבוע (אופציונלי)</label>
+              <div className="profile-slider-card">
+                <input
+                  className="profile-range-input"
+                  name="weekly_weight_change_kg"
+                  type="range"
+                  min="0"
+                  max="3"
+                  step="0.1"
+                  value={form.weekly_weight_change_kg}
+                  onChange={handleChange}
+                />
+                <div className="profile-slider-meta">
+                  <span>0 ק״ג</span>
+                  <strong>{Number(form.weekly_weight_change_kg).toFixed(1)} ק״ג לשבוע</strong>
+                  <span>3 ק״ג</span>
+                </div>
+                <div className="profile-slider-hint">
+                  אם הוגדר גם משקל יעד, המחשבון יתאים את יעד הקלוריות לקצב שבחרת. אם תשאיר 0 או בלי יעד משקל, החישוב הרגיל יישאר כמו היום.
+                </div>
+              </div>
+            </div>
+
+            <div className="form-group">
               <label className="form-label">המטרה שלי</label>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
                 {[
@@ -320,6 +394,8 @@ function Onboarding({ allowEdit = false, theme = 'light', onThemeToggle }) {
                 ))}
               </div>
             </div>
+
+            {formError && <div className="alert alert-error">{formError}</div>}
 
             <button
               className="btn btn-accent"

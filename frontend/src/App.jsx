@@ -41,6 +41,32 @@ function App() {
   }, [theme])
 
   useEffect(() => {
+    const splash = document.getElementById('initial-splash')
+    if (!splash) return
+
+    const start = window.performance?.now?.() ?? 0
+    const minVisibleMs = 650
+    const elapsed = start
+    const delay = Math.max(0, minVisibleMs - elapsed)
+
+    const hideTimer = window.setTimeout(() => {
+      splash.classList.add('is-hiding')
+      const removeTimer = window.setTimeout(() => {
+        splash.remove()
+      }, 300)
+
+      splash.dataset.removeTimer = String(removeTimer)
+    }, delay)
+
+    return () => {
+      window.clearTimeout(hideTimer)
+      if (splash.dataset.removeTimer) {
+        window.clearTimeout(Number(splash.dataset.removeTimer))
+      }
+    }
+  }, [])
+
+  useEffect(() => {
     const rootElement = document.getElementById('root')
     if (!rootElement) return
 

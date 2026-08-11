@@ -5,10 +5,12 @@ import {
   initUser, getUserId,
   logFoodToDB, getTodayLog, getWeekLog, removeLogEntry, updateLogEntry, logMealBatch,
   getFavorites, addFavorite, removeFavorite, addFavoriteGroup, removeFavoriteGroup,
-  chatFoodAssistant,
+  chatFoodAssistant, saveDailyWeight,
 } from '../services/api.js'
 
 const DAY_NAMES = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת']
+const DAILY_WEIGHT_REMINDER_KEY = 'calio_daily_weight_reminder_enabled'
+const DAILY_WEIGHT_PROMPTED_KEY = 'calio_daily_weight_prompted_on'
 
 function buildMealGroupTitle(components) {
   const names = [...new Set(
@@ -26,8 +28,63 @@ function buildMealGroupTitle(components) {
   return `${visible.join(' + ')}${suffix}`
 }
 
+function groupItemsByMealGroup(items) {
+  const result = []
+  const seenGroups = new Set()
+
+  for (const item of items) {
+    if (!item.meal_group_id) {
+      result.push({ type: 'single', item })
+      continue
+    }
+
+    if (seenGroups.has(item.meal_group_id)) continue
+
+    seenGroups.add(item.meal_group_id)
+    const components = items.filter((i) => i.meal_group_id === item.meal_group_id)
+    const total = components.reduce(
+      (acc, c) => ({
+        calories: acc.calories + c.calories,
+        protein_g: acc.protein_g + c.protein_g,
+        fat_g: acc.fat_g + c.fat_g,
+        carbs_g: acc.carbs_g + c.carbs_g,
+      }),
+      { calories: 0, protein_g: 0, fat_g: 0, carbs_g: 0 }
+    )
+
+    result.push({
+      type: 'group',
+      meal_group_id: item.meal_group_id,
+      components,
+      total,
+      title: buildMealGroupTitle(components),
+    })
+  }
+
+  return result
+}
+
 function getTodayKey() {
-  return new Date().toISOString().slice(0, 10)
+  const currentDate = new Date()
+  currentDate.setMinutes(currentDate.getMinutes() - currentDate.getTimezoneOffset())
+  return currentDate.toISOString().slice(0, 10)
+}
+
+function getDateKeyWithOffset(daysOffset) {
+  const currentDate = new Date()
+  currentDate.setDate(currentDate.getDate() + daysOffset)
+  currentDate.setMinutes(currentDate.getMinutes() - currentDate.getTimezoneOffset())
+  return currentDate.toISOString().slice(0, 10)
+}
+
+function formatWeight(weightKg) {
+  return `${Number(weightKg).toFixed(1)} ק״ג`
+}
+
+function parseWeightValue(value) {
+  if (value === null || value === undefined || value === '') return null
+  const normalizedValue = Number(value)
+  return Number.isFinite(normalizedValue) ? normalizedValue : null
 }
 
 function createWelcomeChatMessage(displayName) {
@@ -90,9 +147,11 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
   const [weekData, setWeekData] = useState([])
   const [weekLoading, setWeekLoading] = useState(false)
   const [weekError, setWeekError] = useState(null)
+  const [weekDataReady, setWeekDataReady] = useState(false)
   const [savingFav, setSavingFav] = useState(null)   // id של item שנשמר כרגע
   const [editingItem, setEditingItem] = useState(null)
   const [editValues, setEditValues] = useState({})
+  const [editBaseValues, setEditBaseValues] = useState(null)
   const [editSaving, setEditSaving] = useState(false)
   const [deletePrompt, setDeletePrompt] = useState(null)
   const [expandedGroupId, setExpandedGroupId] = useState(null)
@@ -101,11 +160,18 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
   const [chatInput, setChatInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
   const [chatDayKey, setChatDayKey] = useState(getTodayKey)
+  const [expandedWeekGroupKey, setExpandedWeekGroupKey] = useState(null)
   const [displayName, setDisplayName] = useState(() => localStorage.getItem('calio_display_name') || '')
   const [chatMessages, setChatMessages] = useState(() => [createWelcomeChatMessage(localStorage.getItem('calio_display_name') || '')])
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [settingsName, setSettingsName] = useState(() => localStorage.getItem('calio_display_name') || '')
+  const [dailyWeightReminderEnabled, setDailyWeightReminderEnabled] = useState(() => localStorage.getItem(DAILY_WEIGHT_REMINDER_KEY) === 'true')
+  const [settingsDailyWeightReminderEnabled, setSettingsDailyWeightReminderEnabled] = useState(() => localStorage.getItem(DAILY_WEIGHT_REMINDER_KEY) === 'true')
   const [settingsError, setSettingsError] = useState(null)
+  const [isDailyWeightPromptOpen, setIsDailyWeightPromptOpen] = useState(false)
+  const [dailyWeightInput, setDailyWeightInput] = useState('')
+  const [dailyWeightError, setDailyWeightError] = useState(null)
+  const [dailyWeightSaving, setDailyWeightSaving] = useState(false)
   const chatListRef = useRef(null)
 
   const profile = JSON.parse(localStorage.getItem('calio_profile') || 'null')
@@ -135,6 +201,7 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
     } catch {
       setWeekError('לא הצלחנו לטעון את נתוני השבוע האחרון.')
     } finally {
+      setWeekDataReady(true)
       setWeekLoading(false)
     }
   }, [])
@@ -143,13 +210,23 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
     async function init() {
       try {
         const user = await initUser()
-        await loadTodayData(user.id)
+        await Promise.all([loadTodayData(user.id), loadWeekData(user.id)])
       } catch {
         // שרת לא זמין - ממשיכים ב-offline mode
       }
     }
     init()
-  }, [loadTodayData])
+
+    // רענון נתוני היום כשהמשתמש חוזר לאפליקציה (חשוב בנייד)
+    function handleVisibilityChange() {
+      if (document.visibilityState === 'visible') {
+        const uid = getUserId()
+        if (uid) loadTodayData(uid)
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [loadTodayData, loadWeekData])
 
   useEffect(() => {
     if (!expandedDay) return
@@ -203,6 +280,12 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
     }
   }, [displayName])
 
+  useEffect(() => {
+    if (!dailyWeightReminderEnabled) {
+      setIsDailyWeightPromptOpen(false)
+    }
+  }, [dailyWeightReminderEnabled])
+
   const ensureChatDayIsCurrent = useCallback(() => {
     const todayKey = getTodayKey()
     if (todayKey !== chatDayKey) {
@@ -234,6 +317,103 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
     }),
     { calories: 0, protein_g: 0, fat_g: 0, carbs_g: 0 }
   )
+
+  const todayKey = getTodayKey()
+  const yesterdayKey = getDateKeyWithOffset(-1)
+  const todayWeightEntry = useMemo(
+    () => weekData.find((day) => day.log_date === todayKey)?.weight_kg ?? null,
+    [todayKey, weekData]
+  )
+  const yesterdayWeightEntry = useMemo(
+    () => weekData.find((day) => day.log_date === yesterdayKey)?.weight_kg ?? null,
+    [weekData, yesterdayKey]
+  )
+  const weeklyWeightAverage = useMemo(() => {
+    const weightValues = weekData
+      .map((day) => Number(day.weight_kg))
+      .filter((weight) => Number.isFinite(weight))
+
+    if (weightValues.length === 0) return null
+
+    return weightValues.reduce((sum, weight) => sum + weight, 0) / weightValues.length
+  }, [weekData])
+  const headerWeightSummary = useMemo(() => {
+    if (new Date().getDay() !== 6 || weeklyWeightAverage == null) return null
+
+    return {
+      id: 'weekly-average',
+      variant: 'neutral',
+      label: 'ממוצע שבועי',
+      value: formatWeight(weeklyWeightAverage),
+    }
+  }, [weeklyWeightAverage])
+
+  const headerProgressMessage = useMemo(() => {
+    if (!dailyWeightReminderEnabled || !profile) return null
+
+    const goal = profile.goal
+    const sex = profile.sex
+    const startingWeight = parseWeightValue(profile.weight_kg)
+    const targetWeight = parseWeightValue(profile.target_weight_kg)
+    const todayWeight = parseWeightValue(todayWeightEntry)
+    const yesterdayWeight = parseWeightValue(yesterdayWeightEntry)
+    const hasStartingWeight = startingWeight != null
+    const hasTargetWeight = targetWeight != null
+    const hasTodayWeight = todayWeight != null
+    const hasYesterdayWeight = yesterdayWeight != null
+
+    if (!hasTodayWeight) return null
+
+    if (hasTargetWeight) {
+      const reachedTarget =
+        (goal === 'gain' && todayWeight >= targetWeight) ||
+        (goal === 'lose' && todayWeight <= targetWeight)
+
+      if (reachedTarget) {
+        return {
+          id: 'target-reached',
+          variant: 'success',
+          label: 'יעד משקל',
+          value: 'עברת את משקל היעד כל הכבוד!',
+        }
+      }
+    }
+
+    if (!hasYesterdayWeight) return null
+
+    const movedDailyInRightDirection =
+      (goal === 'gain' && todayWeight > yesterdayWeight) ||
+      (goal === 'lose' && todayWeight < yesterdayWeight)
+
+    const progressedFromStartingWeight = !hasStartingWeight ||
+      (goal === 'gain' && todayWeight >= startingWeight) ||
+      (goal === 'lose' && todayWeight <= startingWeight)
+
+    const inRightDirection = movedDailyInRightDirection && progressedFromStartingWeight
+
+    if (!inRightDirection) return null
+
+    return {
+      id: 'weight-direction',
+      variant: 'success',
+      label: 'מגמת משקל',
+      value: `${sex === 'female' ? 'את' : 'אתה'} בכיוון הנכון`,
+      emoji: '🔥',
+    }
+  }, [dailyWeightReminderEnabled, profile, todayWeightEntry, yesterdayWeightEntry])
+
+  const headerInsights = [headerWeightSummary, headerProgressMessage].filter(Boolean)
+
+  useEffect(() => {
+    if (!dailyWeightReminderEnabled || !profile || !userId || !weekDataReady || weekLoading || weekError) return
+    if (todayWeightEntry != null) return
+    if (localStorage.getItem(DAILY_WEIGHT_PROMPTED_KEY) === todayKey) return
+
+    localStorage.setItem(DAILY_WEIGHT_PROMPTED_KEY, todayKey)
+    setDailyWeightInput(profile.weight_kg ? String(profile.weight_kg) : '')
+    setDailyWeightError(null)
+    setIsDailyWeightPromptOpen(true)
+  }, [dailyWeightReminderEnabled, profile, todayKey, todayWeightEntry, userId, weekDataReady, weekError, weekLoading])
 
   // הוספת מנה לרשימה + שמירה לDB
   async function addItem(data) {
@@ -334,7 +514,16 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
 
   // פתיחת מודל עריכה
   function handleOpenEdit(item) {
+    const baseValues = {
+      quantity_grams: Number(item.quantity_grams) || 0,
+      calories: Number(item.calories) || 0,
+      protein_g: Number(item.protein_g) || 0,
+      fat_g: Number(item.fat_g) || 0,
+      carbs_g: Number(item.carbs_g) || 0,
+    }
+
     setEditingItem(item)
+    setEditBaseValues(baseValues)
     setEditValues({
       food_name: item.food_name,
       quantity_grams: item.quantity_grams,
@@ -342,6 +531,32 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
       protein_g: item.protein_g,
       fat_g: item.fat_g,
       carbs_g: item.carbs_g || 0,
+    })
+  }
+
+  function formatScaledNumber(value) {
+    if (!Number.isFinite(value)) return ''
+    const rounded = Math.round(value * 100) / 100
+    return String(rounded)
+  }
+
+  function handleEditQuantityChange(rawQuantity) {
+    const nextQuantity = Number(rawQuantity)
+
+    setEditValues((prev) => {
+      if (!editBaseValues || !Number.isFinite(nextQuantity) || nextQuantity < 0 || editBaseValues.quantity_grams <= 0) {
+        return { ...prev, quantity_grams: rawQuantity }
+      }
+
+      const ratio = nextQuantity / editBaseValues.quantity_grams
+      return {
+        ...prev,
+        quantity_grams: rawQuantity,
+        calories: formatScaledNumber(editBaseValues.calories * ratio),
+        protein_g: formatScaledNumber(editBaseValues.protein_g * ratio),
+        fat_g: formatScaledNumber(editBaseValues.fat_g * ratio),
+        carbs_g: formatScaledNumber(editBaseValues.carbs_g * ratio),
+      }
     })
   }
 
@@ -366,6 +581,7 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
       }
       await loadWeekData(userId)
       setEditingItem(null)
+      setEditBaseValues(null)
     } catch { /* silent */ } finally {
       setEditSaving(false)
     }
@@ -556,6 +772,7 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
 
   function handleOpenSettings() {
     setSettingsName(displayName)
+    setSettingsDailyWeightReminderEnabled(dailyWeightReminderEnabled)
     setSettingsError(null)
     setIsSettingsOpen(true)
   }
@@ -569,13 +786,46 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
     }
 
     localStorage.setItem('calio_display_name', normalizedName)
+    localStorage.setItem(DAILY_WEIGHT_REMINDER_KEY, settingsDailyWeightReminderEnabled ? 'true' : 'false')
     const savedProfile = JSON.parse(localStorage.getItem('calio_profile') || 'null')
     if (savedProfile) {
       localStorage.setItem('calio_profile', JSON.stringify({ ...savedProfile, display_name: normalizedName }))
     }
+    setDailyWeightReminderEnabled(settingsDailyWeightReminderEnabled)
     setDisplayName(normalizedName)
     setSettingsError(null)
     setIsSettingsOpen(false)
+  }
+
+  async function handleSaveDailyWeight(e) {
+    e.preventDefault()
+    const normalizedWeight = Number(String(dailyWeightInput).replace(',', '.'))
+
+    if (!Number.isFinite(normalizedWeight) || normalizedWeight <= 0) {
+      setDailyWeightError('צריך להזין משקל תקין בקילוגרמים.')
+      return
+    }
+
+    if (!userId) {
+      setDailyWeightError('לא הצלחנו לזהות משתמש לשמירת המשקל.')
+      return
+    }
+
+    setDailyWeightSaving(true)
+    setDailyWeightError(null)
+    try {
+      await saveDailyWeight(userId, normalizedWeight, todayKey)
+      const savedProfile = JSON.parse(localStorage.getItem('calio_profile') || 'null')
+      if (savedProfile) {
+        localStorage.setItem('calio_profile', JSON.stringify({ ...savedProfile, weight_kg: normalizedWeight }))
+      }
+      await loadWeekData(userId)
+      setIsDailyWeightPromptOpen(false)
+    } catch (err) {
+      setDailyWeightError(err.message || 'לא הצלחנו לשמור את המשקל היומי.')
+    } finally {
+      setDailyWeightSaving(false)
+    }
   }
 
   async function handleSendChat(e) {
@@ -715,9 +965,12 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
       {/* Header */}
       <header className="app-header">
         <div>
-          <div className="app-logo">CAL<span>.IO</span></div>
+          <div className="app-logo">
+            <img src="/calorie_app_logo.png" alt="CAL.IO" />
+          </div>
           <div className="app-tagline">עוקב תזונה חכם</div>
         </div>
+
         <div className="header-actions">
           <button
             type="button"
@@ -777,6 +1030,20 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
 
         {activeView === 'today' && (
           <>
+            {profile && headerInsights.length > 0 && (
+              <div className="dashboard-insights" aria-live="polite">
+                {headerInsights.map((insight) => (
+                  <div key={insight.id} className={`dashboard-insight-card ${insight.variant === 'success' ? 'success' : ''}`}>
+                    <div className="dashboard-insight-label">{insight.label}</div>
+                    <div className="dashboard-insight-value">
+                      <span>{insight.value}</span>
+                      {insight.emoji && <span className="dashboard-insight-emoji" aria-hidden="true">{insight.emoji}</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {/* Macro tracker */}
             {profile && (
               <div className="goals-accordion">
@@ -1077,13 +1344,17 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
                       <button
                         type="button"
                         className="week-day-header"
-                        onClick={() => setExpandedDay(isOpen ? null : day.log_date)}
+                        onClick={() => {
+                          setExpandedDay(isOpen ? null : day.log_date)
+                          setExpandedWeekGroupKey(null)
+                        }}
                       >
                         <div className="week-day-title-wrap">
                           <div className="week-day-title">{getDayLabel(day.log_date)}</div>
                           <div className="week-day-date">{getDayDate(day.log_date)}</div>
                         </div>
                         <div className="week-day-summary">
+                          {day.weight_kg != null && <span>{formatWeight(day.weight_kg)}</span>}
                           <span>{Math.round(day.calories)} קק״ל</span>
                           <span>{day.entries} מנות</span>
                           <span className="week-day-chevron">{isOpen ? '▴' : '▾'}</span>
@@ -1092,32 +1363,96 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
 
                       {isOpen && (
                         <div className="week-day-content">
-                          {dayItems.length === 0 && (
+                          {day.weight_kg != null && (
+                            <div className="week-weight-entry">
+                              <div className="week-weight-entry-label">משקל יומי</div>
+                              <div className="week-weight-entry-value">{formatWeight(day.weight_kg)}</div>
+                            </div>
+                          )}
+                          {dayItems.length === 0 && day.weight_kg == null && (
                             <div className="week-view-info">לא נרשמו מנות ביום זה.</div>
                           )}
                           {dayItems.length > 0 && (
                             <div className="week-food-list">
-                              {dayItems.map((item, idx) => (
-                                <div key={item.id ?? `${day.log_date}-${idx}`} className="week-food-item">
-                                  <div className="week-food-main">
-                                    <div className="week-food-name">{item.food_name}</div>
-                                    <div className="week-food-meta">
-                                      {Math.round(item.quantity_grams)}ג׳ · חלבון {Math.round(item.protein_g)}ג׳ · שומן {Math.round(item.fat_g)}ג׳ · פחמימה {Math.round(item.carbs_g)}ג׳
+                              {groupItemsByMealGroup(dayItems).map((entry, idx) => {
+                                if (entry.type === 'single') {
+                                  const item = entry.item
+                                  return (
+                                    <div key={item.id ?? `${day.log_date}-${idx}`} className="week-food-item">
+                                      <div className="week-food-main">
+                                        <div className="week-food-name">{item.food_name}</div>
+                                        <div className="week-food-meta">
+                                          {Math.round(item.quantity_grams)}ג׳ · חלבון {Math.round(item.protein_g)}ג׳ · שומן {Math.round(item.fat_g)}ג׳ · פחמימה {Math.round(item.carbs_g)}ג׳
+                                        </div>
+                                      </div>
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                                        <div className="week-food-calories">{Math.round(item.calories)} קק״ל</div>
+                                        <button
+                                          type="button"
+                                          title="הוסף ליומן היום"
+                                          onClick={() => { setActiveView('today'); addItem(item) }}
+                                          style={{ background: 'var(--color-muted-bg)', border: '1px solid var(--color-border)', borderRadius: 6, cursor: 'pointer', fontSize: 12, color: 'var(--color-primary)', padding: '3px 8px', whiteSpace: 'nowrap' }}
+                                        >
+                                          + היום
+                                        </button>
+                                      </div>
                                     </div>
-                                  </div>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-                                    <div className="week-food-calories">{Math.round(item.calories)} קק״ל</div>
-                                    <button
-                                      type="button"
-                                      title="הוסף ליומן היום"
-                                      onClick={() => { setActiveView('today'); addItem(item) }}
-                                      style={{ background: 'var(--color-muted-bg)', border: '1px solid var(--color-border)', borderRadius: 6, cursor: 'pointer', fontSize: 12, color: 'var(--color-primary)', padding: '3px 8px', whiteSpace: 'nowrap' }}
+                                  )
+                                }
+
+                                const groupKey = `${day.log_date}_${entry.meal_group_id}`
+                                const isGroupOpen = expandedWeekGroupKey === groupKey
+
+                                return (
+                                  <div key={groupKey} style={{ borderRadius: 'var(--radius-sm, 8px)', overflow: 'hidden', border: '1px solid var(--color-border)' }}>
+                                    <div
+                                      className="week-food-item"
+                                      style={{ cursor: 'pointer' }}
+                                      onClick={() => setExpandedWeekGroupKey(isGroupOpen ? null : groupKey)}
                                     >
-                                      + היום
-                                    </button>
+                                      <div className="week-food-main">
+                                        <div className="week-food-name">🍱 {entry.title}</div>
+                                        <div className="week-food-meta">
+                                          חלבון {Math.round(entry.total.protein_g)}ג׳ · שומן {Math.round(entry.total.fat_g)}ג׳ · פחמימה {Math.round(entry.total.carbs_g)}ג׳
+                                        </div>
+                                      </div>
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                                        <div className="week-food-calories">{Math.round(entry.total.calories)} קק״ל</div>
+                                        <button
+                                          type="button"
+                                          title="הוסף ארוחה ליומן היום"
+                                          onClick={(e) => { e.stopPropagation(); setActiveView('today'); addItem({ components: entry.components }) }}
+                                          style={{ background: 'var(--color-muted-bg)', border: '1px solid var(--color-border)', borderRadius: 6, cursor: 'pointer', fontSize: 12, color: 'var(--color-primary)', padding: '3px 8px', whiteSpace: 'nowrap' }}
+                                        >
+                                          + היום
+                                        </button>
+                                        <span style={{ color: 'var(--color-icon-muted)', fontSize: 12, padding: '2px 4px' }}>{isGroupOpen ? '▴' : '▾'}</span>
+                                      </div>
+                                    </div>
+
+                                    {isGroupOpen && (
+                                      <div style={{ borderTop: '1px solid var(--color-border)', background: 'var(--color-muted-bg)' }}>
+                                        {entry.components.map((comp, compIdx) => (
+                                          <div
+                                            key={comp.id ?? `${groupKey}-${compIdx}`}
+                                            style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', borderBottom: compIdx < entry.components.length - 1 ? '1px solid var(--color-border)' : 'none' }}
+                                          >
+                                            <div style={{ flex: 1 }}>
+                                              <div style={{ fontWeight: 600, color: 'var(--color-foreground)', fontSize: 13 }}>{comp.food_name}</div>
+                                              <div style={{ color: 'var(--color-muted-text)', fontSize: 11, marginTop: 2 }}>
+                                                {Math.round(comp.quantity_grams)}ג׳ · חלבון {Math.round(comp.protein_g)}ג׳ · שומן {Math.round(comp.fat_g)}ג׳ · פחמימה {Math.round(comp.carbs_g)}ג׳
+                                              </div>
+                                            </div>
+                                            <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--color-primary)', flexShrink: 0 }}>
+                                              {Math.round(comp.calories)} קק״ל
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
                                   </div>
-                                </div>
-                              ))}
+                                )
+                              })}
                             </div>
                           )}
                         </div>
@@ -1385,6 +1720,22 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
                 </button>
               </div>
 
+              <div className="settings-toggle-row">
+                <div>
+                  <div className="settings-label">תזכורת משקל יומית</div>
+                  <div className="settings-toggle-hint">אם הפעולה פעילה, תופיע בקשה להזין משקל בפתיחה הראשונה של כל יום.</div>
+                </div>
+
+                <label className="switch-toggle" aria-label="הפעלת תזכורת משקל יומית">
+                  <input
+                    type="checkbox"
+                    checked={settingsDailyWeightReminderEnabled}
+                    onChange={(e) => setSettingsDailyWeightReminderEnabled(e.target.checked)}
+                  />
+                  <span className="switch-toggle-slider" />
+                </label>
+              </div>
+
               <div className="settings-actions-row">
                 <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>שמור</button>
                 <button
@@ -1401,6 +1752,59 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
         </div>
       )}
 
+      {isDailyWeightPromptOpen && (
+        <div className="modal-overlay" onClick={() => setIsDailyWeightPromptOpen(false)}>
+          <div
+            className="modal-card"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label="הזנת משקל יומי"
+          >
+            <div className="modal-title">מה המשקל שלך היום?</div>
+            <div className="daily-weight-modal-subtitle">המשקל יישמר במסך השבוע האחרון וייכנס לממוצע השבועי של שבת.</div>
+
+            <form onSubmit={handleSaveDailyWeight}>
+              <div className="form-group">
+                <label className="form-label">משקל בקילוגרמים</label>
+                <input
+                  className="form-input"
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  inputMode="decimal"
+                  value={dailyWeightInput}
+                  onChange={(e) => {
+                    setDailyWeightInput(e.target.value)
+                    setDailyWeightError(null)
+                  }}
+                  placeholder="לדוגמה 78.4"
+                  autoFocus
+                  required
+                />
+              </div>
+
+              {dailyWeightError && <div className="alert alert-error">{dailyWeightError}</div>}
+
+              <div className="settings-actions-row">
+                <button type="submit" className="btn btn-primary" style={{ flex: 1 }} disabled={dailyWeightSaving}>
+                  {dailyWeightSaving ? 'שומר...' : 'שמור משקל'}
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ flex: 1, background: 'var(--color-muted-bg)', color: 'var(--color-foreground)' }}
+                  onClick={() => setIsDailyWeightPromptOpen(false)}
+                  disabled={dailyWeightSaving}
+                >
+                  אחר כך
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* מודל עריכת מנה */}
       {editingItem && (
         <div
@@ -1410,7 +1814,10 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             padding: '16px',
           }}
-          onClick={() => setEditingItem(null)}
+          onClick={() => {
+            setEditingItem(null)
+            setEditBaseValues(null)
+          }}
         >
           <div
             style={{
@@ -1471,7 +1878,7 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
                   className="form-input"
                   type="number" min="0" step="any"
                   value={editValues.quantity_grams}
-                  onChange={(e) => setEditValues((v) => ({ ...v, quantity_grams: e.target.value }))}
+                  onChange={(e) => handleEditQuantityChange(e.target.value)}
                   required
                 />
               </div>
@@ -1523,7 +1930,10 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setEditingItem(null)}
+                  onClick={() => {
+                    setEditingItem(null)
+                    setEditBaseValues(null)
+                  }}
                   style={{
                     flex: 1, padding: '10px', borderRadius: 'var(--radius-sm, 8px)',
                     border: '1px solid var(--color-border)', background: 'var(--color-muted-bg)',

@@ -3,13 +3,14 @@ Endpoints לרישום מזון - חיפוש, שמירה לDB, מועדפים, �
 """
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 from datetime import date, timedelta
 from ..schemas import (
     FoodDescribeRequest, FoodLookupRequest,
     FoodLogCreate, FoodLogUpdate, FoodLogBatch, FoodLogOut, FavoriteMealCreate, FavoriteMealOut,
     FoodChatRequest, FoodChatResponse, FavoriteGroupCreate,
 )
-from ..models import FoodLog, FavoriteMeal
+from ..models import FoodLog, FavoriteMeal, DailyWeight
 from ..database import get_db
 from ..services import ai_estimate
 
@@ -186,12 +187,23 @@ def get_week_log(user_id: int, db: Session = Depends(get_db)):
     today = date.today()
     week_start = today - timedelta(days=6)
 
-    items = (
-        db.query(FoodLog)
-        .filter(FoodLog.user_id == user_id, FoodLog.log_date >= week_start)
-        .order_by(FoodLog.log_date, FoodLog.logged_at)
-        .all()
-    )
+    try:
+        items = (
+            db.query(FoodLog)
+            .filter(FoodLog.user_id == user_id, FoodLog.log_date >= week_start)
+            .order_by(FoodLog.log_date, FoodLog.logged_at)
+            .all()
+        )
+
+        weights = (
+            db.query(DailyWeight)
+            .filter(DailyWeight.user_id == user_id, DailyWeight.log_date >= week_start)
+            .all()
+        )
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=503, detail="חיבור למסד הנתונים נותק זמנית. נסה שוב בעוד כמה שניות.")
+    weight_by_date = {entry.log_date: entry.weight_kg for entry in weights}
 
     # קיבוץ לפי תאריך
     by_date: dict[date, list] = {}
@@ -210,6 +222,7 @@ def get_week_log(user_id: int, db: Session = Depends(get_db)):
             "fat_g": sum(i.fat_g for i in day_items),
             "carbs_g": sum(i.carbs_g for i in day_items),
             "entries": len(day_items),
+            "weight_kg": weight_by_date.get(day),
             "items": day_items,
         })
     return result

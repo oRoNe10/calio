@@ -10,6 +10,79 @@
  */
 const BASE_URL = (import.meta.env.VITE_API_URL || (typeof window !== 'undefined' ? window.location.origin : '')).replace(/\/$/, '')
 
+function isLocalhostHost(hostname) {
+  return hostname === 'localhost' || hostname === '127.0.0.1'
+}
+
+function buildApiBaseCandidates() {
+  const seen = new Set()
+  const candidates = []
+
+  const push = (value) => {
+    const normalized = (value || '').replace(/\/$/, '')
+    if (!normalized || seen.has(normalized)) return
+    seen.add(normalized)
+    candidates.push(normalized)
+  }
+
+  push(BASE_URL)
+
+  if (typeof window === 'undefined') {
+    return candidates
+  }
+
+  const { protocol, hostname, origin } = window.location
+  if (!isLocalhostHost(hostname)) {
+    return candidates
+  }
+
+  push(origin)
+  push(`${protocol}//localhost:8001`)
+  push(`${protocol}//127.0.0.1:8001`)
+  push(`${protocol}//localhost:8000`)
+  push(`${protocol}//127.0.0.1:8000`)
+
+  return candidates
+}
+
+const API_BASE_CANDIDATES = buildApiBaseCandidates()
+
+async function apiFetch(path, options) {
+  let networkFailure = null
+
+  for (let i = 0; i < API_BASE_CANDIDATES.length; i += 1) {
+    const base = API_BASE_CANDIDATES[i]
+    try {
+      const response = await fetch(`${base}${path}`, options)
+
+      // ב-localhost בלבד: אם פגענו ב-vite dev server בטעות (404), ננסה את שאר הפורטים.
+      const isPotentialWrongHost =
+        typeof window !== 'undefined' &&
+        isLocalhostHost(window.location.hostname) &&
+        response.status === 404 &&
+        base === window.location.origin
+
+      if (isPotentialWrongHost && i < API_BASE_CANDIDATES.length - 1) {
+        continue
+      }
+
+      return response
+    } catch (error) {
+      networkFailure = error
+    }
+  }
+
+  if (typeof window !== 'undefined' && isLocalhostHost(window.location.hostname)) {
+    throw new Error('אין חיבור לשרת ה-Backend. ודא שהשרת רץ על http://localhost:8001 או http://localhost:8000.')
+  }
+
+  if (networkFailure instanceof Error && networkFailure.message) {
+    throw new Error(networkFailure.message)
+  }
+
+  throw new Error('נכשלה הגישה לשרת')
+}
+
 const IMAGE_MAX_SIDE = 1280
 const IMAGE_QUALITY = 0.8
 
@@ -62,7 +135,7 @@ function getDeviceId() {
 /** יוצר / מחזיר את המשתמש לפי device_id, שומר user_id ב-localStorage. */
 export async function initUser() {
   const deviceId = getDeviceId()
-  const response = await fetch(`${BASE_URL}/user/device/${deviceId}`)
+  const response = await apiFetch(`/user/device/${deviceId}`)
   if (!response.ok) throw new Error('שגיאה באתחול המשתמש')
   const user = await response.json()
   localStorage.setItem('calio_user_id', String(user.id))
@@ -76,7 +149,7 @@ export function getUserId() {
 // ── פרופיל ──────────────────────────────────────────────────────────────────
 
 export async function calculateProfile(profileData) {
-  const response = await fetch(`${BASE_URL}/profile/calculate`, {
+  const response = await apiFetch('/profile/calculate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(profileData),
@@ -87,7 +160,7 @@ export async function calculateProfile(profileData) {
 
 /** שומר את הפרופיל המלא (נתוני קלט + תוצאות) לDB. */
 export async function saveProfileToDB(userId, profileInput, profileResult) {
-  const response = await fetch(`${BASE_URL}/profile/save`, {
+  const response = await apiFetch('/profile/save', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: Number(userId), ...profileInput, ...profileResult }),
@@ -98,16 +171,26 @@ export async function saveProfileToDB(userId, profileInput, profileResult) {
 
 /** טוען פרופיל שמור מה-DB. מחזיר null אם אין. */
 export async function loadProfileFromDB(userId) {
-  const response = await fetch(`${BASE_URL}/profile/${userId}`)
+  const response = await apiFetch(`/profile/${userId}`)
   if (response.status === 404) return null
   if (!response.ok) throw new Error('שגיאה בטעינת פרופיל')
+  return response.json()
+}
+
+export async function saveDailyWeight(userId, weightKg, logDate) {
+  const response = await apiFetch('/profile/daily-weight', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: Number(userId), weight_kg: weightKg, log_date: logDate }),
+  })
+  if (!response.ok) throw new Error('שגיאה בשמירת המשקל היומי')
   return response.json()
 }
 
 // ── מזון ────────────────────────────────────────────────────────────────────
 
 export async function lookupFood(foodName, quantityGrams) {
-  const response = await fetch(`${BASE_URL}/food/lookup`, {
+  const response = await apiFetch('/food/lookup', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ food_name: foodName, quantity_grams: quantityGrams }),
@@ -120,7 +203,7 @@ export async function describeFood(description) {
   const payload = JSON.stringify({ description })
 
   for (let attempt = 1; attempt <= 2; attempt += 1) {
-    const response = await fetch(`${BASE_URL}/food/describe`, {
+    const response = await apiFetch('/food/describe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: payload,
@@ -144,7 +227,7 @@ export async function describeFood(description) {
 }
 
 export async function chatFoodAssistant(message, history = []) {
-  const response = await fetch(`${BASE_URL}/food/chat`, {
+  const response = await apiFetch('/food/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message, history }),
@@ -161,7 +244,7 @@ export async function identifyFoodFromImage(file) {
   const optimized = await optimizeImageForUpload(file)
   const formData = new FormData()
   formData.append('file', optimized)
-  const response = await fetch(`${BASE_URL}/food/identify-image`, {
+  const response = await apiFetch('/food/identify-image', {
     method: 'POST',
     body: formData,
   })
@@ -174,7 +257,7 @@ export async function identifyFoodFromImage(file) {
 
 /** שומר מנה לDB (לאחר שכבר חישבנו את הערכים). מחזיר רשומה עם id. */
 export async function logFoodToDB(userId, foodData) {
-  const response = await fetch(`${BASE_URL}/food/log`, {
+  const response = await apiFetch('/food/log', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: Number(userId), ...foodData }),
@@ -185,13 +268,13 @@ export async function logFoodToDB(userId, foodData) {
 
 /** מוחק רשומה מהיומן לפי id. */
 export async function removeLogEntry(logId) {
-  const response = await fetch(`${BASE_URL}/food/log/${logId}`, { method: 'DELETE' })
+  const response = await apiFetch(`/food/log/${logId}`, { method: 'DELETE' })
   if (!response.ok) throw new Error('שגיאה במחיקת רשומה')
 }
 
 /** מעדכן ערכי מנה קיימת לפי id. */
 export async function updateLogEntry(logId, data) {
-  const response = await fetch(`${BASE_URL}/food/log/${logId}`, {
+  const response = await apiFetch(`/food/log/${logId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -202,7 +285,7 @@ export async function updateLogEntry(logId, data) {
 
 /** שומר מנה מרוכבת (כמה מרכיבים) לDB תחת אותו meal_group_id. */
 export async function logMealBatch(userId, components, mealGroupId) {
-  const response = await fetch(`${BASE_URL}/food/log/batch`, {
+  const response = await apiFetch('/food/log/batch', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -220,14 +303,14 @@ export async function logMealBatch(userId, components, mealGroupId) {
 
 /** מחזיר את כל המנות של היום. אוטומטית "מתאפס" בכל יום חדש. */
 export async function getTodayLog(userId) {
-  const response = await fetch(`${BASE_URL}/food/today/${userId}`)
+  const response = await apiFetch(`/food/today/${userId}`)
   if (!response.ok) throw new Error('שגיאה בטעינת יומן היום')
   return response.json()
 }
 
 /** מחזיר סיכום 7 ימים אחורה (כולל היום). */
 export async function getWeekLog(userId) {
-  const response = await fetch(`${BASE_URL}/food/week/${userId}`)
+  const response = await apiFetch(`/food/week/${userId}`)
   if (!response.ok) throw new Error('שגיאה בטעינת היסטוריה שבועית')
   return response.json()
 }
@@ -235,13 +318,13 @@ export async function getWeekLog(userId) {
 // ── מועדפים ─────────────────────────────────────────────────────────────────
 
 export async function getFavorites(userId) {
-  const response = await fetch(`${BASE_URL}/food/favorites/${userId}`)
+  const response = await apiFetch(`/food/favorites/${userId}`)
   if (!response.ok) throw new Error('שגיאה בטעינת מועדפים')
   return response.json()
 }
 
 export async function addFavorite(userId, mealData) {
-  const response = await fetch(`${BASE_URL}/food/favorites`, {
+  const response = await apiFetch('/food/favorites', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: Number(userId), ...mealData }),
@@ -251,12 +334,12 @@ export async function addFavorite(userId, mealData) {
 }
 
 export async function removeFavorite(favoriteId) {
-  const response = await fetch(`${BASE_URL}/food/favorites/${favoriteId}`, { method: 'DELETE' })
+  const response = await apiFetch(`/food/favorites/${favoriteId}`, { method: 'DELETE' })
   if (!response.ok) throw new Error('שגיאה בהסרה ממועדפים')
 }
 
 export async function addFavoriteGroup(userId, groupName, components) {
-  const response = await fetch(`${BASE_URL}/food/favorites/group`, {
+  const response = await apiFetch('/food/favorites/group', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: Number(userId), group_name: groupName, components }),
@@ -266,12 +349,12 @@ export async function addFavoriteGroup(userId, groupName, components) {
 }
 
 export async function removeFavoriteGroup(favGroupId) {
-  const response = await fetch(`${BASE_URL}/food/favorites/group/${favGroupId}`, { method: 'DELETE' })
+  const response = await apiFetch(`/food/favorites/group/${favGroupId}`, { method: 'DELETE' })
   if (!response.ok) throw new Error('שגיאה בהסרת ארוחה מורכבת ממועדפים')
 }
 
 export async function deleteUserAccount(userId) {
-  const response = await fetch(`${BASE_URL}/user/${userId}`, { method: 'DELETE' })
+  const response = await apiFetch(`/user/${userId}`, { method: 'DELETE' })
   if (!response.ok) throw new Error('שגיאה במחיקת החשבון')
 }
 

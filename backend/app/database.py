@@ -29,7 +29,20 @@ RAW_DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DEFAULT_SQLITE_PATH.as
 DATABASE_URL = _normalize_database_url(RAW_DATABASE_URL)
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
+engine_kwargs = {"connect_args": connect_args}
+
+if DATABASE_URL.startswith("postgresql+psycopg://"):
+    # Keep pooled Postgres connections healthy on managed providers.
+    engine_kwargs.update(
+        pool_pre_ping=True,
+        pool_recycle=int(os.getenv("DB_POOL_RECYCLE_SECONDS", "300")),
+    )
+    engine_kwargs["connect_args"] = {
+        **connect_args,
+        "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "10")),
+    }
+
+engine = create_engine(DATABASE_URL, **engine_kwargs)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
