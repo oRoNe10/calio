@@ -10,6 +10,22 @@ import os
 from pathlib import Path
 
 
+def _is_placeholder_database_url(raw_url: str) -> bool:
+    normalized = raw_url.strip()
+    if not normalized:
+        return True
+
+    placeholders = (
+        "USER:PASSWORD@HOST",
+        "/DBNAME",
+        "your_user",
+        "your_password",
+        "your_host",
+    )
+    lowered = normalized.lower()
+    return any(token.lower() in lowered for token in placeholders)
+
+
 def _normalize_database_url(raw_url: str) -> str:
     """Convert common Postgres URL formats to SQLAlchemy+psycopg format."""
     if raw_url.startswith("postgres://"):
@@ -25,7 +41,8 @@ def _normalize_database_url(raw_url: str) -> str:
 
 # Always use one stable local DB file under backend/, regardless of where uvicorn is launched.
 DEFAULT_SQLITE_PATH = Path(__file__).resolve().parents[1] / "calio.db"
-RAW_DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DEFAULT_SQLITE_PATH.as_posix()}")
+ENV_DATABASE_URL = os.getenv("DATABASE_URL", "")
+RAW_DATABASE_URL = ENV_DATABASE_URL if not _is_placeholder_database_url(ENV_DATABASE_URL) else f"sqlite:///{DEFAULT_SQLITE_PATH.as_posix()}"
 DATABASE_URL = _normalize_database_url(RAW_DATABASE_URL)
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}

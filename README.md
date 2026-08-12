@@ -48,10 +48,17 @@ cd backend
 python -m venv venv               # יצירת סביבה וירטואלית (פעם אחת)
 source venv/bin/activate          # ב-Windows: venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload
+uvicorn app.main:app --host 127.0.0.1 --port 8001 --reload
 ```
-השרת ירוץ ב- http://localhost:8000
-תיעוד אינטראקטיבי (אפשר לבדוק endpoints ישירות מהדפדפן) ב- http://localhost:8000/docs
+השרת ירוץ ב- http://127.0.0.1:8001
+תיעוד אינטראקטיבי (אפשר לבדוק endpoints ישירות מהדפדפן) ב- http://127.0.0.1:8001/docs
+
+ב-Windows אפשר גם להריץ את הסקריפט:
+```powershell
+cd backend
+./run-local.ps1
+```
+הסקריפט משתמש ב-Python מתוך `backend/venv` ומרים את השרת על הפורט שה-frontend מצפה לו (`8001`).
 
 ### שלב 3: הרצת ה-Frontend
 בטרמינל חדש (השאר את ה-Backend רץ):
@@ -61,6 +68,7 @@ npm install
 npm run dev
 ```
 האתר ירוץ ב- http://localhost:5173
+בפיתוח מקומי ה-frontend כבר מוגדר לפנות ל- http://localhost:8001 דרך `frontend/.env`.
 
 ## איך לעבוד עם Copilot על הפרויקט הזה
 

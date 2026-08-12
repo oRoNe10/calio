@@ -127,6 +127,7 @@ function MacroCard({ label, current, target, colorClass, unit = 'גרם' }) {
 }
 
 function Dashboard({ theme = 'light', onThemeToggle }) {
+  const FAVORITES_SCROLL_THRESHOLD = 5
   const navigate = useNavigate()
   const [activeView, setActiveView] = useState('today')
   const [isGoalsOpen, setIsGoalsOpen] = useState(false)
@@ -143,7 +144,8 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
   const [logged, setLogged] = useState([])
   const [favorites, setFavorites] = useState([])
   const [addingFavoriteId, setAddingFavoriteId] = useState(null)
-  const [favoritesMenuOpen, setFavoritesMenuOpen] = useState(false)
+  const [isMenuOpen, setIsMenuOpen] = useState(false)
+  const [isFavoritesModalOpen, setIsFavoritesModalOpen] = useState(false)
   const [weekData, setWeekData] = useState([])
   const [weekLoading, setWeekLoading] = useState(false)
   const [weekError, setWeekError] = useState(null)
@@ -169,6 +171,7 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
   const [settingsDailyWeightReminderEnabled, setSettingsDailyWeightReminderEnabled] = useState(() => localStorage.getItem(DAILY_WEIGHT_REMINDER_KEY) === 'true')
   const [settingsError, setSettingsError] = useState(null)
   const [isDailyWeightPromptOpen, setIsDailyWeightPromptOpen] = useState(false)
+  const [dailyWeightModalMode, setDailyWeightModalMode] = useState('reminder')
   const [dailyWeightInput, setDailyWeightInput] = useState('')
   const [dailyWeightError, setDailyWeightError] = useState(null)
   const [dailyWeightSaving, setDailyWeightSaving] = useState(false)
@@ -239,18 +242,19 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
   useEffect(() => {
     function handleEscape(event) {
       if (event.key === 'Escape') {
-        setFavoritesMenuOpen(false)
+        setIsMenuOpen(false)
+        setIsFavoritesModalOpen(false)
       }
     }
 
-    if (favoritesMenuOpen) {
+    if (isMenuOpen || isFavoritesModalOpen) {
       document.addEventListener('keydown', handleEscape)
     }
 
     return () => {
       document.removeEventListener('keydown', handleEscape)
     }
-  }, [favoritesMenuOpen])
+  }, [isFavoritesModalOpen, isMenuOpen])
 
   useEffect(() => {
     if (!loading) { setLoadingStep(0); return }
@@ -281,10 +285,10 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
   }, [displayName])
 
   useEffect(() => {
-    if (!dailyWeightReminderEnabled) {
+    if (!dailyWeightReminderEnabled && dailyWeightModalMode === 'reminder') {
       setIsDailyWeightPromptOpen(false)
     }
-  }, [dailyWeightReminderEnabled])
+  }, [dailyWeightModalMode, dailyWeightReminderEnabled])
 
   const ensureChatDayIsCurrent = useCallback(() => {
     const todayKey = getTodayKey()
@@ -410,6 +414,7 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
     if (localStorage.getItem(DAILY_WEIGHT_PROMPTED_KEY) === todayKey) return
 
     localStorage.setItem(DAILY_WEIGHT_PROMPTED_KEY, todayKey)
+    setDailyWeightModalMode('reminder')
     setDailyWeightInput(profile.weight_kg ? String(profile.weight_kg) : '')
     setDailyWeightError(null)
     setIsDailyWeightPromptOpen(true)
@@ -682,6 +687,14 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
     return result
   }, [favorites])
 
+  const filteredFavorites = useMemo(() => {
+    return groupedFavorites.filter(
+      (entry) => !favSearch || (entry.group_name ?? entry.food_name ?? '').includes(favSearch)
+    )
+  }, [favSearch, groupedFavorites])
+
+  const favoritesListIsScrollable = filteredFavorites.length > FAVORITES_SCROLL_THRESHOLD
+
   // כוכב - הוספה/הסרה ממועדפים
   async function handleToggleFavorite(item) {
     if (!userId) return
@@ -747,7 +760,7 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
       } else {
         await addItem(entry)
       }
-      setFavoritesMenuOpen(false)
+      setIsFavoritesModalOpen(false)
     } finally {
       setAddingFavoriteId(null)
     }
@@ -757,6 +770,13 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
     try {
       await removeFavoriteGroup(favGroupId)
       setFavorites((prev) => prev.filter((f) => f.favorite_group_id !== favGroupId))
+    } catch { /* silent */ }
+  }
+
+  async function handleRemoveFavoriteItem(favoriteId) {
+    try {
+      await removeFavorite(favoriteId)
+      setFavorites((prev) => prev.filter((f) => f.id !== favoriteId))
     } catch { /* silent */ }
   }
 
@@ -775,6 +795,21 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
     setSettingsDailyWeightReminderEnabled(dailyWeightReminderEnabled)
     setSettingsError(null)
     setIsSettingsOpen(true)
+  }
+
+  function handleOpenFavoritesModal() {
+    setIsMenuOpen(false)
+    setFavSearch('')
+    setIsFavoritesModalOpen(true)
+  }
+
+  function handleOpenDailyWeightEditor() {
+    const currentWeight = todayWeightEntry ?? profile?.weight_kg ?? ''
+    setIsMenuOpen(false)
+    setDailyWeightModalMode('manual')
+    setDailyWeightInput(currentWeight === '' ? '' : String(currentWeight))
+    setDailyWeightError(null)
+    setIsDailyWeightPromptOpen(true)
   }
 
   function handleSaveSettings(e) {
@@ -821,6 +856,7 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
       }
       await loadWeekData(userId)
       setIsDailyWeightPromptOpen(false)
+      setDailyWeightModalMode('manual')
     } catch (err) {
       setDailyWeightError(err.message || 'לא הצלחנו לשמור את המשקל היומי.')
     } finally {
@@ -982,18 +1018,20 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
             ⚙️
           </button>
 
-          <div>
-            <button
-              type="button"
-              className={`header-action-btn favorites-trigger-btn ${favoritesMenuOpen ? 'active' : ''}`}
-              onClick={() => setFavoritesMenuOpen((prev) => !prev)}
-              aria-haspopup="dialog"
-              aria-expanded={favoritesMenuOpen}
-              aria-controls="favorites-drawer"
-            >
-              מנות אהובות
-            </button>
-          </div>
+          <button
+            type="button"
+            className={`header-icon-btn menu-toggle-btn ${isMenuOpen ? 'active' : ''}`}
+            onClick={() => setIsMenuOpen((prev) => !prev)}
+            aria-haspopup="dialog"
+            aria-expanded={isMenuOpen}
+            aria-controls="app-menu-drawer"
+            aria-label="פתח תפריט"
+            title="תפריט"
+          >
+            <span />
+            <span />
+            <span />
+          </button>
 
         </div>
       </header>
@@ -1411,7 +1449,7 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
                                       onClick={() => setExpandedWeekGroupKey(isGroupOpen ? null : groupKey)}
                                     >
                                       <div className="week-food-main">
-                                        <div className="week-food-name">🍱 {entry.title}</div>
+                                        <div className="week-food-name">{entry.title}</div>
                                         <div className="week-food-meta">
                                           חלבון {Math.round(entry.total.protein_g)}ג׳ · שומן {Math.round(entry.total.fat_g)}ג׳ · פחמימה {Math.round(entry.total.carbs_g)}ג׳
                                         </div>
@@ -1553,101 +1591,147 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
         )}
       </div>
 
-      <div className={`favorites-drawer-layer ${favoritesMenuOpen ? 'open' : ''}`} aria-hidden={!favoritesMenuOpen}>
+      <div className={`favorites-drawer-layer ${isMenuOpen ? 'open' : ''}`} aria-hidden={!isMenuOpen}>
         <button
           type="button"
           className="favorites-drawer-backdrop"
-          aria-label="סגור רשימת מנות אהובות"
-          onClick={() => setFavoritesMenuOpen(false)}
-          tabIndex={favoritesMenuOpen ? 0 : -1}
+          aria-label="סגור תפריט"
+          onClick={() => setIsMenuOpen(false)}
+          tabIndex={isMenuOpen ? 0 : -1}
         />
         <aside
-          id="favorites-drawer"
+          id="app-menu-drawer"
           className="favorites-drawer"
           role="dialog"
           aria-modal="true"
-          aria-label="רשימת מנות אהובות"
+          aria-label="תפריט ראשי"
         >
           <div className="favorites-drawer-header">
-            <div className="favorites-drawer-title">מנות אהובות</div>
+            <div className="favorites-drawer-title">תפריט</div>
             <button
               type="button"
               className="favorites-drawer-close"
-              onClick={() => setFavoritesMenuOpen(false)}
+              onClick={() => setIsMenuOpen(false)}
               aria-label="סגור"
             >
               ✕
             </button>
           </div>
-          <div className="favorites-drawer-subtitle">לחץ על מנה כדי להוסיף ליומן היומי</div>
+          <div className="favorites-drawer-subtitle">גישה מהירה למנות אהובות ולעריכת המשקל היומי</div>
 
-          {favorites.length > 4 && (
-            <div style={{ padding: '0 16px 10px' }}>
+          <div className="menu-drawer-list">
+            <button
+              type="button"
+              className="menu-drawer-item"
+              onClick={handleOpenFavoritesModal}
+            >
+              <div className="menu-drawer-item-title">מנות אהובות</div>
+              <div className="menu-drawer-item-subtitle">פתח רשימה עם חיפוש וגלילה לפי כמות המנות</div>
+            </button>
+
+            <button
+              type="button"
+              className="menu-drawer-item"
+              onClick={handleOpenDailyWeightEditor}
+            >
+              <div className="menu-drawer-item-title">ערוך משקל יומי</div>
+              <div className="menu-drawer-item-subtitle">זמין תמיד, גם בלי תזכורת משקל יומית פעילה</div>
+            </button>
+          </div>
+        </aside>
+      </div>
+
+      {isFavoritesModalOpen && (
+        <div className="modal-overlay" onClick={() => setIsFavoritesModalOpen(false)}>
+          <div
+            className="modal-card favorites-modal-card"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label="מנות אהובות"
+          >
+            <div className="favorites-drawer-header">
+              <div className="modal-title" style={{ marginBottom: 0 }}>מנות אהובות</div>
+              <button
+                type="button"
+                className="favorites-drawer-close"
+                onClick={() => setIsFavoritesModalOpen(false)}
+                aria-label="סגור"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="favorites-modal-search-wrap">
               <input
                 className="form-input"
                 type="text"
                 placeholder="חפש מנה..."
                 value={favSearch}
                 onChange={(e) => setFavSearch(e.target.value)}
-                style={{ fontSize: 13 }}
               />
             </div>
-          )}
 
-          <div className="favorites-drawer-list">
-            {favorites.length === 0 && (
-              <div className="favorites-menu-empty">אין עדיין מנות אהובות</div>
-            )}
-            {groupedFavorites
-              .filter((entry) => !favSearch || (entry.group_name ?? entry.food_name ?? '').includes(favSearch))
-              .map((entry) => {
-                if (entry.favorite_group_id) {
-                  const key = entry.favorite_group_id
+            <div className={`favorites-modal-list ${favoritesListIsScrollable ? 'scrollable' : ''}`}>
+              {favorites.length === 0 && (
+                <div className="favorites-menu-empty">אין עדיין מנות אהובות</div>
+              )}
+              {filteredFavorites.map((entry) => {
+                  if (entry.favorite_group_id) {
+                    const key = entry.favorite_group_id
+                    return (
+                      <div key={key} className="favorites-menu-item favorites-menu-item-group">
+                        <button
+                          type="button"
+                          className="favorites-menu-item-add-btn"
+                          onClick={() => handleAddFromFavorite(entry)}
+                          disabled={addingFavoriteId === key}
+                          title="הוסף ארוחה שלמה ליומן"
+                        >
+                          <div className="favorites-menu-item-name">
+                            <span style={{ fontSize: 14, marginLeft: 5 }}>🍱</span>
+                            {entry.group_name}
+                          </div>
+                          <div className="favorites-menu-item-meta">
+                            {entry.components.length} מרכיבים · {Math.round(entry.total.calories)} קק״ל · חלבון {Math.round(entry.total.protein_g)}ג׳
+                          </div>
+                        </button>
+                        <button
+                          type="button"
+                          className="favorites-menu-item-remove"
+                          onClick={() => handleRemoveFavoriteGroup(key)}
+                          title="הסר מהמועדפים"
+                          aria-label="הסר ארוחה מהמועדפים"
+                        >✕</button>
+                      </div>
+                    )
+                  }
                   return (
-                    <div key={key} className="favorites-menu-item favorites-menu-item-group">
+                    <div key={entry.id} className="favorites-menu-item">
                       <button
                         type="button"
                         className="favorites-menu-item-add-btn"
                         onClick={() => handleAddFromFavorite(entry)}
-                        disabled={addingFavoriteId === key}
-                        title="הוסף ארוחה שלמה ליומן"
+                        disabled={addingFavoriteId === entry.id}
+                        title="הוסף ליומן היומי"
                       >
-                        <div className="favorites-menu-item-name">
-                          <span style={{ fontSize: 14, marginLeft: 5 }}>🍱</span>
-                          {entry.group_name}
-                        </div>
-                        <div className="favorites-menu-item-meta">
-                          {entry.components.length} מרכיבים · {Math.round(entry.total.calories)} קק״ל · חלבון {Math.round(entry.total.protein_g)}ג׳
-                        </div>
+                        <div className="favorites-menu-item-name">{entry.food_name}</div>
+                        <div className="favorites-menu-item-meta">{entry.quantity_grams}ג׳ · {Math.round(entry.calories)} קק״ל</div>
                       </button>
                       <button
                         type="button"
                         className="favorites-menu-item-remove"
-                        onClick={() => handleRemoveFavoriteGroup(key)}
+                        onClick={() => handleRemoveFavoriteItem(entry.id)}
                         title="הסר מהמועדפים"
-                        aria-label="הסר ארוחה מהמועדפים"
+                        aria-label="הסר מנה מהמועדפים"
                       >✕</button>
                     </div>
                   )
-                }
-                return (
-                  <div key={entry.id} className="favorites-menu-item">
-                    <button
-                      type="button"
-                      className="favorites-menu-item-add-btn"
-                      onClick={() => handleAddFromFavorite(entry)}
-                      disabled={addingFavoriteId === entry.id}
-                      title="הוסף ליומן היומי"
-                    >
-                      <div className="favorites-menu-item-name">{entry.food_name}</div>
-                      <div className="favorites-menu-item-meta">{entry.quantity_grams}ג׳ · {Math.round(entry.calories)} קק״ל</div>
-                    </button>
-                  </div>
-                )
-              })}
+                })}
+            </div>
           </div>
-        </aside>
-      </div>
+        </div>
+      )}
 
       <nav className="bottom-nav" aria-label="ניווט תחתון">
         <button
@@ -1761,8 +1845,12 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
             aria-modal="true"
             aria-label="הזנת משקל יומי"
           >
-            <div className="modal-title">מה המשקל שלך היום?</div>
-            <div className="daily-weight-modal-subtitle">המשקל יישמר במסך השבוע האחרון וייכנס לממוצע השבועי של שבת.</div>
+            <div className="modal-title">{dailyWeightModalMode === 'manual' ? 'עריכת משקל יומי' : 'מה המשקל שלך היום?'}</div>
+            <div className="daily-weight-modal-subtitle">
+              {dailyWeightModalMode === 'manual'
+                ? 'אפשר לעדכן או להחליף את המשקל של היום בכל רגע. הערך יופיע במסך השבוע האחרון.'
+                : 'המשקל יישמר במסך השבוע האחרון וייכנס לממוצע השבועי של שבת.'}
+            </div>
 
             <form onSubmit={handleSaveDailyWeight}>
               <div className="form-group">
@@ -1797,7 +1885,7 @@ function Dashboard({ theme = 'light', onThemeToggle }) {
                   onClick={() => setIsDailyWeightPromptOpen(false)}
                   disabled={dailyWeightSaving}
                 >
-                  אחר כך
+                  {dailyWeightModalMode === 'manual' ? 'סגור' : 'אחר כך'}
                 </button>
               </div>
             </form>

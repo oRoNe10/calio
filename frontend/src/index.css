@@ -11,6 +11,7 @@
   --color-secondary: #10B981;
   --color-accent: #EA580C;
   --color-accent-hover: #C2410C;
+  --color-accent-light: #ffedd5;
   --color-background: #ECFDF5;
   --color-surface: #FFFFFF;
   --color-foreground: #0F172A;
@@ -68,6 +69,7 @@
   --color-secondary: #34d399;
   --color-accent: #f97316;
   --color-accent-hover: #fb923c;
+  --color-accent-light: rgba(249, 115, 22, 0.18);
   --color-background: #0b1220;
   --color-surface: #101a2a;
   --color-foreground: #e2e8f0;
@@ -159,7 +161,8 @@ html {
 .page,
 .onboarding-body > .card,
 .chat-messages,
-.favorites-drawer-list {
+.favorites-drawer-list,
+.favorites-modal-list {
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
 }
@@ -167,21 +170,24 @@ html {
 .page::-webkit-scrollbar,
 .onboarding-body > .card::-webkit-scrollbar,
 .chat-messages::-webkit-scrollbar,
-.favorites-drawer-list::-webkit-scrollbar {
+.favorites-drawer-list::-webkit-scrollbar,
+.favorites-modal-list::-webkit-scrollbar {
   width: var(--scrollbar-size);
 }
 
 .page::-webkit-scrollbar-track,
 .onboarding-body > .card::-webkit-scrollbar-track,
 .chat-messages::-webkit-scrollbar-track,
-.favorites-drawer-list::-webkit-scrollbar-track {
+.favorites-drawer-list::-webkit-scrollbar-track,
+.favorites-modal-list::-webkit-scrollbar-track {
   background: transparent;
 }
 
 .page::-webkit-scrollbar-thumb,
 .onboarding-body > .card::-webkit-scrollbar-thumb,
 .chat-messages::-webkit-scrollbar-thumb,
-.favorites-drawer-list::-webkit-scrollbar-thumb {
+.favorites-drawer-list::-webkit-scrollbar-thumb,
+.favorites-modal-list::-webkit-scrollbar-thumb {
   background: transparent;
   border-radius: var(--radius-full);
   border: 2px solid transparent;
@@ -191,21 +197,24 @@ html {
 html.is-scrolling .page,
 html.is-scrolling .onboarding-body > .card,
 html.is-scrolling .chat-messages,
-html.is-scrolling .favorites-drawer-list {
+html.is-scrolling .favorites-drawer-list,
+html.is-scrolling .favorites-modal-list {
   scrollbar-color: var(--scrollbar-thumb-color) transparent;
 }
 
 html.is-scrolling .page::-webkit-scrollbar-thumb,
 html.is-scrolling .onboarding-body > .card::-webkit-scrollbar-thumb,
 html.is-scrolling .chat-messages::-webkit-scrollbar-thumb,
-html.is-scrolling .favorites-drawer-list::-webkit-scrollbar-thumb {
+html.is-scrolling .favorites-drawer-list::-webkit-scrollbar-thumb,
+html.is-scrolling .favorites-modal-list::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb-color);
 }
 
 html.is-scrolling .page::-webkit-scrollbar-thumb:hover,
 html.is-scrolling .onboarding-body > .card::-webkit-scrollbar-thumb:hover,
 html.is-scrolling .chat-messages::-webkit-scrollbar-thumb:hover,
-html.is-scrolling .favorites-drawer-list::-webkit-scrollbar-thumb:hover {
+html.is-scrolling .favorites-drawer-list::-webkit-scrollbar-thumb:hover,
+html.is-scrolling .favorites-modal-list::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-thumb-hover-color);
 }
 
@@ -362,11 +371,21 @@ body {
   border-color: var(--header-btn-border-hover);
 }
 
-.favorites-trigger-btn {
-  min-width: 96px;
+.menu-toggle-btn {
+  position: relative;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.favorites-trigger-btn.active {
+.menu-toggle-btn span {
+  display: block;
+  width: 16px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.menu-toggle-btn.active {
   background: rgba(255,255,255,0.26);
   border-color: rgba(255,255,255,0.52);
 }
@@ -463,6 +482,46 @@ body {
   padding-right: 2px;
 }
 
+.menu-drawer-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.menu-drawer-item {
+  width: 100%;
+  border: 1.5px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-soft-surface);
+  color: var(--color-foreground);
+  text-align: right;
+  padding: 14px 12px;
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease, transform 120ms ease;
+}
+
+.menu-drawer-item:hover {
+  background: var(--color-soft-surface-hover);
+  border-color: var(--color-soft-border);
+}
+
+.menu-drawer-item:active {
+  transform: scale(0.99);
+}
+
+.menu-drawer-item-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-foreground);
+}
+
+.menu-drawer-item-subtitle {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--color-muted-text);
+}
+
 .favorites-menu-item {
   border: 1.5px solid var(--color-border);
   border-radius: var(--radius-sm);
@@ -485,10 +544,15 @@ body {
 
 .favorites-menu-item-add-btn {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 4px;
   background: none;
   border: none;
   text-align: right;
-  padding: 9px 10px;
+  padding: 11px 12px;
   cursor: pointer;
   min-width: 0;
 }
@@ -523,18 +587,19 @@ body {
   font-size: 13px;
   color: var(--color-foreground);
   font-weight: 700;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
 }
 
 .favorites-menu-item-meta {
-  margin-top: 3px;
   font-size: 11px;
   color: var(--color-muted-text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
 }
 
 .favorites-menu-empty {
@@ -1781,6 +1846,42 @@ body {
   margin-bottom: 14px;
 }
 
+.favorites-modal-card {
+  max-width: 420px;
+  max-height: min(78dvh, 620px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.favorites-modal-search-wrap {
+  padding-top: 2px;
+  flex-shrink: 0;
+}
+
+.favorites-modal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1 1 auto;
+  overflow-y: visible;
+  min-height: 0;
+  max-height: none;
+  padding-right: 2px;
+  padding-bottom: 2px;
+}
+
+.favorites-modal-list.scrollable {
+  overflow-y: auto;
+  min-height: 220px;
+  max-height: min(48dvh, 360px);
+}
+
+.favorites-modal-list .favorites-menu-item {
+  flex-shrink: 0;
+}
+
 .dashboard-insights {
   display: flex;
   flex-direction: column;
@@ -1800,7 +1901,7 @@ body {
 }
 
 .dashboard-insight-card.success {
-  background: color-mix(in srgb, #ffedd5 60%, var(--color-surface));
+  background: color-mix(in srgb, var(--color-accent-light) 42%, var(--color-surface));
   border-color: color-mix(in srgb, var(--color-accent) 30%, var(--color-border));
 }
 
@@ -2017,6 +2118,10 @@ body {
   .week-food-item {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .week-food-item .week-food-main {
+    width: 100%;
   }
 
   .week-food-calories {
